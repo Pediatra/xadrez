@@ -152,11 +152,90 @@ class Storage:
 
                 CREATE INDEX IF NOT EXISTS idx_events_game
                     ON events(game_id, id);
+
+                CREATE TABLE IF NOT EXISTS app_state (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
                 """
             )
             conn.commit()
         finally:
             conn.close()
+
+    def _set_current_game(self, conn: sqlite3.Connection, game_id: int) -> None:
+        conn.execute(
+            """
+            INSERT INTO app_state (key, value, updated_at)
+            VALUES ('current_game_id', ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                updated_at = excluded.updated_at
+            """,
+            (str(game_id), utc_now()),
+        )
+
+    def _clear_current_game(
+        self,
+        conn: sqlite3.Connection,
+        game_id: int | None = None,
+    ) -> None:
+        if game_id is None:
+            conn.execute("DELETE FROM app_state WHERE key = 'current_game_id'")
+            return
+        conn.execute(
+            """
+            DELETE FROM app_state
+            WHERE key = 'current_game_id' AND value = ?
+            """,
+            (str(game_id),),
+        )
+
+    def set_current_game(self, game_id: int) -> bool:
+        conn = self._connect()
+        try:
+            with conn:
+                row = conn.execute(
+                    "SELECT id FROM games WHERE id = ?", (game_id,)
+                ).fetchone()
+                if row is None:
+                    return False
+                self._set_current_game(conn, game_id)
+        finally:
+            conn.close()
+        return True
+
+    def get_current_game(self) -> dict[str, Any] | None:
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                """
+                SELECT value FROM app_state
+                WHERE key = 'current_game_id'
+                """
+            ).fetchone()
+            if row is None:
+                return None
+
+            try:
+                game_id = int(row["value"])
+            except (TypeError, ValueError):
+                with conn:
+                    self._clear_current_game(conn)
+                return None
+
+            game = conn.execute(
+                "SELECT id FROM games WHERE id = ?", (game_id,)
+            ).fetchone()
+            if game is None:
+                with conn:
+                    self._clear_current_game(conn)
+                return None
+        finally:
+            conn.close()
+
+        return self.get_game(game_id)
 
     def create_game(
         self,
@@ -197,6 +276,7 @@ class Storage:
                         now,
                     ),
                 )
+                self._set_current_game(conn, game_id)
         finally:
             conn.close()
 
@@ -409,6 +489,7 @@ class Storage:
                         now,
                     ),
                 )
+                self._clear_current_game(conn, game_id)
         finally:
             conn.close()
         return True
@@ -518,6 +599,7 @@ class Storage:
                         now,
                     ),
                 )
+                self._set_current_game(conn, game_id)
         finally:
             conn.close()
 

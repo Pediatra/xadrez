@@ -55,6 +55,7 @@ const ui = {
   newGame: $("#new-game"),
   flipBoard: $("#flip-board"),
   undoMove: $("#undo-move"),
+  resignGame: $("#resign-game"),
   botLevel: $("#bot-level"),
   engineWarning: $("#engine-warning"),
   moveList: $("#move-list"),
@@ -129,6 +130,7 @@ const state = {
   chatLog: [],
   restoredSession: false,
   restoreCoach: false,
+  lastAction: null,
 };
 
 const coach = {
@@ -322,6 +324,8 @@ function restoreSession() {
       : null;
   state.restoreCoach =
     Boolean(data.coachVisible) && state.lastAnalysis !== null;
+  state.lastAction =
+    typeof data.lastAction === "string" ? data.lastAction : null;
 
   const evaluation =
     data.eval && typeof data.eval === "object" ? data.eval : NEUTRAL_EVAL;
@@ -364,6 +368,7 @@ function saveSession() {
     eval: evaluation,
     lastAnalysis: state.lastAnalysis,
     coachVisible: !ui.coachPanel.hidden,
+    lastAction: state.lastAction,
     chatLog: state.chatLog,
   };
 
@@ -389,32 +394,147 @@ function pushChatLog(entry) {
   saveSession();
 }
 
-async function ensureGameAfterRestore() {
-  if (!state.gameId) {
-    try {
-      await ensureGameRecord();
+function moveListsEqual(a, b) {
+  return a.length === b.length && a.every((uci, index) => uci === b[index]);
+}
+
+function evaluationFromLabel(label) {
+  if (typeof label !== "string" || !label.trim()) return NEUTRAL_EVAL;
+  const clean = label.trim();
+
+  if (clean.startsWith("#")) {
+    const mate = Number.parseInt(clean.slice(1), 10);
+    if (Number.isFinite(mate)) {
+      return {
+        type: "mate",
+        value: mate,
+        label: clean,
+        white_cp: mate >= 0 ? 1000 : -1000,
+      };
+    }
+  }
+
+  const value = Number.parseFloat(clean);
+  if (!Number.isFinite(value)) return NEUTRAL_EVAL;
+  const cp = Math.round(value * 100);
+  return {
+    type: "cp",
+    value: cp,
+    label: clean,
+    white_cp: Math.max(-1000, Math.min(1000, cp)),
+  };
+}
+
+function serverGameEvaluation(gameData) {
+  const moves = Array.isArray(gameData?.moves) ? gameData.moves : [];
+  for (let index = moves.length - 1; index >= 0; index -= 1) {
+    const label = moves[index].eval_after ?? moves[index].eval_before;
+    if (label) return evaluationFromLabel(label);
+  }
+  return NEUTRAL_EVAL;
+}
+
+async function syncWithServerSession() {
+  let current = null;
+  try {
+    const response = await fetch("/session/current");
+    if (response.ok) {
+      const payload = await response.json();
+      current = payload.current ?? null;
+    }
+  } catch (error) {
+    console.warn("Não foi possível consultar a partida atual no servidor:", error);
+  }
+
+  if (current?.game) {
+    const serverGame = current.game;
+
+    if (state.restoredSession && state.gameId === serverGame.id) {
+      const localUcis = localMoveUcis();
+      const serverUcis = (current.moves || []).map((move) => move.uci);
+      const sameMoves = moveListsEqual(localUcis, serverUcis);
+      const localIsPrefix = localUcis.every(
+        (uci, index) => serverUcis[index] === uci,
+      );
+
+      if (
+        !sameMoves &&
+        serverUcis.length > localUcis.length &&
+        localIsPrefix &&
+        state.lastAction === "undo"
+      ) {
+        let synced = false;
+        try {
+          const response = await fetch(`/games/${state.gameId}/undo`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              plies: Math.min(serverUcis.length - localUcis.length, 4),
+              fen: state.game.fen(),
+              pgn: state.game.pgn(),
+              reason: "restore_undo",
+            }),
+            keepalive: true,
+          });
+          synced = response.ok;
+        } catch (error) {
+          console.warn("Não foi possível sincronizar o desfazer:", error);
+        }
+
+        if (!synced) applyServerGame(current);
+        saveSession();
+        return;
+      }
+
+      if (!sameMoves) {
+        applyServerGame(current);
+      }
       saveSession();
-    } catch (error) {
-      console.warn("Não foi possível iniciar o histórico SQLite:", error);
+      return;
+    }
+
+    const hadSession = state.restoredSession;
+    if (applyServerGame(current, { resetChat: hadSession })) {
+      saveSession();
       appendChatNote(
-        "⚠️ O histórico SQLite não iniciou. O jogo funciona, mas esta partida não será salva.",
+        `Partida #${serverGame.id} retomada do histórico do servidor.`,
       );
     }
     return;
   }
 
-  try {
-    const response = await fetch(`/games/${state.gameId}`);
-    if (response.status !== 404) return;
+  if (state.restoredSession && state.gameId) {
+    try {
+      const response = await fetch(`/games/${state.gameId}`);
+      if (response.ok) {
+        const data = await response.json();
+        if (!data.game?.ended_at) {
+          const claim = await fetch("/session/current", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ game_id: state.gameId }),
+          });
+          if (claim.ok) {
+            saveSession();
+            return;
+          }
+        }
+      }
+    } catch (error) {
+      console.warn("Não foi possível reivindicar a partida local:", error);
+    }
 
-    state.gameId = null;
-    appendChatNote(
-      "⚠️ A partida anterior não está mais no histórico local. Os próximos lances serão salvos em uma nova partida.",
-    );
+    resetGameBoard();
+  }
+
+  try {
     await ensureGameRecord();
     saveSession();
   } catch (error) {
-    console.warn("Não foi possível validar a partida restaurada:", error);
+    console.warn("Não foi possível iniciar o histórico SQLite:", error);
+    appendChatNote(
+      "⚠️ O histórico SQLite não iniciou. O jogo funciona, mas esta partida não será salva.",
+    );
   }
 }
 
@@ -466,11 +586,73 @@ function clearPendingTurn() {
   }
 }
 
+function applyServerGame(gameData, { resetChat = false } = {}) {
+  const startFen = gameData?.game?.start_fen || START_FEN;
+  const serverMoves = Array.isArray(gameData?.moves) ? gameData.moves : [];
+
+  let game;
+  try {
+    game = new Chess(startFen);
+    for (const move of serverMoves) {
+      game.move(move.san);
+    }
+  } catch (error) {
+    console.warn("Não foi possível reconstruir a partida do servidor:", error);
+    return false;
+  }
+
+  state.game = game;
+  state.gameId = Number(gameData.game?.id) || state.gameId;
+  state.level = Number.isInteger(gameData.game?.level)
+    ? gameData.game.level
+    : state.level;
+  state.boardLocked =
+    Boolean(gameData.game?.game_over) ||
+    game.isGameOver() ||
+    game.turn() === "b";
+  state.lastAnalysis = null;
+  state.turnPending = false;
+  state.lastAction = "restore";
+  const evaluation = serverGameEvaluation(gameData);
+  state.evalByFen = new Map([[fenKey(startFen), NEUTRAL_EVAL]]);
+  state.evalByFen.set(fenKey(game.fen()), evaluation);
+
+  setAnalyzing(false);
+  clearArrows();
+  clearReference();
+  hideCoachBoard();
+  ui.botLevel.value = String(state.level);
+
+  if (resetChat) {
+    const greeting = ui.chatMessages.querySelector(".chat-bubble.trainer");
+    for (const child of [...ui.chatMessages.children]) {
+      if (child !== greeting) child.remove();
+    }
+    state.chatLog = [];
+  }
+
+  renderBoard(lastMoveFromHistory());
+  renderMoves();
+  updateEval(evaluation);
+
+  const latestUserMove = [...serverMoves]
+    .reverse()
+    .find((move) => move.actor === "user" && move.classification);
+  if (latestUserMove) {
+    showQuality(latestUserMove);
+  } else {
+    hideQualityBadge();
+  }
+
+  if (resetChat) scrollChatToBottom();
+  return true;
+}
+
 function adoptServerGame(data) {
-  const startFen = data?.game?.start_fen || START_FEN;
-  const serverMoves = Array.isArray(data?.moves) ? data.moves : [];
   const localUcis = localMoveUcis();
-  const serverUcis = serverMoves.map((move) => move.uci);
+  const serverUcis = Array.isArray(data?.moves)
+    ? data.moves.map((move) => move.uci)
+    : [];
 
   if (
     serverUcis.length <= localUcis.length ||
@@ -479,36 +661,11 @@ function adoptServerGame(data) {
     return false;
   }
 
-  let game;
-  try {
-    game = new Chess(startFen);
-    for (const move of serverMoves) {
-      game.move(move.san);
-    }
-  } catch {
-    return false;
-  }
-
-  state.game = game;
-  state.gameId = Number(data.game?.id) || state.gameId;
-  state.boardLocked = Boolean(data.game?.game_over) || game.isGameOver();
-  state.lastAnalysis = null;
-  state.turnPending = false;
-  state.evalByFen = new Map([[fenKey(startFen), NEUTRAL_EVAL]]);
-  state.evalByFen.set(fenKey(game.fen()), NEUTRAL_EVAL);
-
-  setAnalyzing(false);
-  clearArrows();
-  clearReference();
-  hideQualityBadge();
-  hideCoachBoard();
-  renderBoard(lastMoveFromHistory());
-  renderMoves();
-  updateEval(NEUTRAL_EVAL);
-  return true;
+  return applyServerGame(data);
 }
 
 async function recoverPendingTurn(pending) {
+  state.lastAction = "pending";
   setAnalyzing(true);
   ui.boardOverlayText.textContent = "Recuperando o último lance…";
 
@@ -519,7 +676,6 @@ async function recoverPendingTurn(pending) {
         state.gameId = null;
         clearPendingTurn();
         setAnalyzing(false);
-        await ensureGameAfterRestore();
         return;
       }
       if (!response.ok) break;
@@ -623,10 +779,10 @@ function init() {
 
   const pending = readPendingTurn();
   if (state.restoredSession && pending && pending.gameId === state.gameId) {
-    void recoverPendingTurn(pending);
+    void recoverPendingTurn(pending).then(() => syncWithServerSession());
   } else {
     if (pending) clearPendingTurn();
-    void ensureGameAfterRestore();
+    void syncWithServerSession();
   }
 }
 
@@ -634,6 +790,7 @@ function bindEvents() {
   ui.newGame.addEventListener("click", startNewGame);
   ui.flipBoard.addEventListener("click", flipBoard);
   ui.undoMove.addEventListener("click", undoMove);
+  ui.resignGame.addEventListener("click", () => void resignGame());
   ui.botLevel.addEventListener("change", () => {
     state.level = Number.parseInt(ui.botLevel.value, 10) || 3;
     void recordGameEvent("level_change", { level: state.level });
@@ -792,6 +949,10 @@ function updateUndoButton() {
     state.analyzing || state.game.history().length === 0;
 }
 
+function updateResignButton() {
+  ui.resignGame.disabled = state.analyzing || state.turnPending;
+}
+
 function updateTurnPill() {
   let text = "";
   let mode = "your-turn";
@@ -828,6 +989,7 @@ function setAnalyzing(active) {
   ui.boardOverlay.hidden = !active;
   ui.boardShell.setAttribute("aria-busy", String(active));
   ui.botLevel.disabled = active;
+  updateResignButton();
   if (active) {
     ui.boardOverlayText.textContent = "Analisando seu lance…";
   }
@@ -1108,6 +1270,10 @@ async function analyzeUserMove({ fenBefore, fenAfterUser, uci, lastMove }) {
     }
     state.turnPending = false;
     clearPendingTurn();
+    if (!controller.signal.aborted && state.game.history().length > 0) {
+      state.lastAction = "move";
+    }
+    updateResignButton();
     saveSession();
   }
 }
@@ -1537,18 +1703,20 @@ function rollbackMove(fenAfterUser, message) {
   appendChatNote(`⚠️ Análise indisponível: ${message}`);
 }
 
-function startNewGame() {
+function resetGameBoard({ gameId = null, startFen = START_FEN } = {}) {
   state.moveController?.abort();
+  state.moveController = null;
   const previousGameId = state.gameId;
   state.gameEpoch += 1;
-  state.gameId = null;
+  state.gameId = gameId;
   state.gamePromise = null;
-  state.game = new Chess();
+  state.game = new Chess(startFen);
   state.boardLocked = false;
   state.analyzing = false;
   state.turnPending = false;
   state.lastAnalysis = null;
-  state.evalByFen = new Map([[fenKey(START_FEN), NEUTRAL_EVAL]]);
+  state.lastAction = "new_game";
+  state.evalByFen = new Map([[fenKey(startFen), NEUTRAL_EVAL]]);
   clearPendingTurn();
   setAnalyzing(false);
   clearArrows();
@@ -1559,6 +1727,11 @@ function startNewGame() {
   renderMoves();
   updateEval(NEUTRAL_EVAL);
   saveSession();
+  return previousGameId;
+}
+
+function startNewGame() {
+  const previousGameId = resetGameBoard();
   if (previousGameId) {
     void endGameRecord(previousGameId, "new_game");
   }
@@ -1571,6 +1744,62 @@ function startNewGame() {
       );
     });
   appendChatNote("Novo jogo iniciado.");
+}
+
+async function resignGame() {
+  if (state.analyzing || state.turnPending) return;
+
+  const previousGameId = state.gameId;
+  const confirmed = window.confirm(
+    previousGameId
+      ? "Desistir desta partida e começar outra do zero?"
+      : "Começar uma nova partida do zero?",
+  );
+  if (!confirmed) return;
+
+  ui.resignGame.disabled = true;
+
+  try {
+    const response = await fetch("/session/resign", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        level: state.level,
+        student_level: state.trainerLevel,
+        game_id: previousGameId,
+      }),
+    });
+    if (!response.ok) {
+      throw new Error(await readHttpError(response));
+    }
+
+    const payload = await response.json();
+    const newGame = payload.game ?? null;
+    resetGameBoard({
+      gameId: newGame?.id ?? null,
+      startFen: newGame?.fen ?? START_FEN,
+    });
+
+    if (!newGame?.id) {
+      await ensureGameRecord();
+      saveSession();
+    }
+
+    state.lastAction = "resign";
+    appendChatNote(
+      payload.ended_game_id
+        ? `Você desistiu da partida #${payload.ended_game_id}. Nova partida iniciada.`
+        : "Nova partida iniciada.",
+    );
+  } catch (error) {
+    console.warn("Não foi possível registrar a desistência:", error);
+    startNewGame();
+    appendChatNote(
+      `Não foi possível registrar a desistência (${error.message}). Nova partida iniciada.`,
+    );
+  } finally {
+    updateResignButton();
+  }
 }
 
 function flipBoard() {
@@ -1608,6 +1837,7 @@ function undoMove() {
     if (state.game.turn() === "w") break;
   } while (undone < 2 && state.game.history().length > 0);
 
+  state.lastAction = "undo";
   if (state.gameId) {
     void recordUndo(state.gameId, undone);
   }

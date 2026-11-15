@@ -233,6 +233,14 @@ class EndGameRequest(BaseModel):
     result: str | None = Field(None, max_length=16)
 
 
+class CurrentGameRequest(BaseModel):
+    game_id: int = Field(..., ge=1)
+
+
+class ResignRequest(CreateGameRequest):
+    game_id: int | None = Field(None, ge=1)
+
+
 class UndoRequest(BaseModel):
     plies: int = Field(2, ge=1, le=4)
     fen: str = Field(..., min_length=10, max_length=120)
@@ -1272,6 +1280,70 @@ async def _streaming_agy_response(
         chat_limiter.unreserve()
         raise
     return response
+
+
+@app.get("/session/current")
+async def session_current() -> dict[str, Any]:
+    current = await asyncio.to_thread(storage.get_current_game)
+    return {"current": current}
+
+
+@app.post("/session/current")
+async def session_set_current(body: CurrentGameRequest) -> dict[str, Any]:
+    claimed = await asyncio.to_thread(storage.set_current_game, body.game_id)
+    if not claimed:
+        raise HTTPException(status_code=404, detail="Partida não encontrada.")
+    return {"ok": True}
+
+
+@app.post("/session/resign")
+async def session_resign(body: ResignRequest) -> dict[str, Any]:
+    game_id = body.game_id
+    if game_id is None:
+        current = await asyncio.to_thread(storage.get_current_game)
+        if current is not None:
+            game_id = int(current["game"]["id"])
+
+    ended_game_id: int | None = None
+    result: str | None = None
+
+    if game_id is not None:
+        game_data = await asyncio.to_thread(storage.get_game, game_id)
+        if game_data is not None and not game_data["game"]["ended_at"]:
+            user_color = game_data["game"]["user_color"]
+            result = "0-1" if user_color == "white" else "1-0"
+            ended = await asyncio.to_thread(
+                storage.end_game,
+                game_id,
+                "resign",
+                result,
+            )
+            if ended:
+                ended_game_id = game_id
+                try:
+                    await asyncio.to_thread(
+                        storage.record_event,
+                        game_id,
+                        "resign",
+                        {"result": result},
+                    )
+                except Exception:
+                    logger.exception(
+                        "Falha ao registrar o evento de desistência da partida %s",
+                        game_id,
+                    )
+
+    new_game = await asyncio.to_thread(
+        storage.create_game,
+        body.level,
+        body.student_level,
+        body.start_fen,
+    )
+    return {
+        "ended_game_id": ended_game_id,
+        "result": result,
+        "game": new_game,
+    }
 
 
 @app.post("/games")

@@ -202,6 +202,12 @@ o caminho do `agy`, se ele existe e qual `AGY_MODEL` está em uso.
   são restaurados do `localStorage` do navegador. Se você atualizar no meio da
   análise de um lance, a página tenta recuperar o lance e a resposta do bot
   direto do SQLite antes de liberar o tabuleiro.
+- A partida atual também fica registrada no SQLite. Se você abrir a aplicação em
+  outro navegador ou limpar os dados do site, ela é retomada do servidor, com
+  tabuleiro, lances, avaliação e nível do bot.
+- **Desistir** encerra a partida com derrota (resultado `0-1` quando você joga de
+  brancas), registra o evento `resign` no histórico e começa outra partida do
+  zero. É diferente de **Novo Jogo**, que encerra a anterior sem resultado.
 - A aba **Revisor** mostra o histórico salvo em SQLite: partidas, todos os
   lances com classificação e avaliação, lances desfeitos, estatísticas de
   precisão/perda média, fases e peças mais frágeis, aberturas repetidas e
@@ -271,7 +277,10 @@ O processo é encerrado no `finally` em caso de timeout ou desconexão do client
 
 ### Histórico e revisor
 
-- `POST /games` cria uma partida no SQLite.
+- `POST /games` cria uma partida no SQLite e a marca como atual.
+- `GET /session/current` devolve a partida atual com todos os lances.
+- `POST /session/current` reivindica uma partida existente como atual.
+- `POST /session/resign` encerra a partida atual com derrota e cria outra.
 - `GET /games` lista as partidas com resumo de precisão e classificações.
 - `GET /games/{id}` devolve todos os lances, lances desfeitos, eventos, PGN e
   estatísticas da partida.
@@ -386,7 +395,10 @@ Git. Ele guarda:
 - lances do aluno e do Stockfish, com FEN antes/depois, classificação, perda de
   centipawns, avaliações, melhor lance, PV e linha de refutação;
 - lances desfeitos, marcados com `undone = 1` em vez de apagados;
-- eventos de jogo: início, fim, desfazer, inverter tabuleiro e troca de nível.
+- eventos de jogo: início, fim, desistência, desfazer, inverter tabuleiro e
+  troca de nível;
+- em `app_state`, o ponteiro para a partida atual, usado para retomar em outro
+  navegador ou depois de limpar o `localStorage`.
 
 A aba **Revisor** lê esse banco e mostra:
 

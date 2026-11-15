@@ -811,6 +811,16 @@ textarea {
   white-space: nowrap;
 }
 
+.resign-button {
+  border-color: rgba(248, 113, 113, 0.45) !important;
+  color: #fca5a5 !important;
+}
+
+.resign-button:hover:not(:disabled) {
+  border-color: rgba(248, 113, 113, 0.75) !important;
+  background: rgba(248, 113, 113, 0.12);
+}
+
 .level-field {
   flex: 0 1 205px;
   margin: 0 0 0 auto;
