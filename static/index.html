@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="pt-BR" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Treino de xadrez local com Stockfish e treinador Gemini via agy.">
+  <title>Treino de Xadrez · Stockfish + Gemini</title>
+
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/chessground@9.1.1/assets/chessground.base.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/chessground@9.1.1/assets/chessground.brown.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/chessground@9.1.1/assets/chessground.cburnett.css">
+  <link rel="stylesheet" href="/static/style.css">
+
+  <script type="module" src="/static/app.js"></script>
+</head>
+<body>
+  <div class="page">
+    <header class="app-header">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">♞</span>
+        <div>
+          <h1>Treino de Xadrez</h1>
+          <p>Stockfish local + Gemini 4 Hydrogen</p>
+        </div>
+      </div>
+      <a class="health-link" href="/health" target="_blank" rel="noreferrer">
+        Diagnóstico <span aria-hidden="true">↗</span>
+      </a>
+    </header>
+
+    <main class="app-layout">
+      <section class="panel board-panel" aria-labelledby="game-heading">
+        <h2 id="game-heading" class="sr-only">Partida</h2>
+
+        <div class="board-row">
+          <div class="eval-column" aria-label="Avaliação do Stockfish">
+            <div
+              class="eval-bar"
+              id="eval-bar"
+              role="img"
+              aria-label="Avaliação: 0.00, posição equilibrada"
+            >
+              <div class="eval-white" id="eval-white"></div>
+              <div class="eval-midline" aria-hidden="true"></div>
+            </div>
+            <span class="eval-label" id="eval-label">0.00</span>
+          </div>
+
+          <div class="board-shell" id="board-shell" aria-busy="false">
+            <div id="board" class="board"></div>
+            <div class="board-overlay" id="board-overlay" hidden>
+              <div class="spinner" aria-hidden="true"></div>
+              <span id="board-overlay-text">Analisando seu lance…</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="status-row">
+          <span class="turn-pill" id="turn-pill" data-state="your-turn">Sua vez (brancas)</span>
+          <span class="quality-badge" id="quality-badge" hidden></span>
+        </div>
+
+        <div class="controls" role="group" aria-label="Controles da partida">
+          <button id="new-game" type="button">Novo Jogo</button>
+          <button id="flip-board" type="button" class="secondary outline">Inverter Tabuleiro</button>
+          <button id="undo-move" type="button" class="secondary outline" disabled>Desfazer Lance</button>
+          <label class="level-field" for="bot-level">
+            Nível do Bot
+            <select id="bot-level" name="bot-level">
+              <option value="1">1 · Iniciante</option>
+              <option value="2">2 · Casual</option>
+              <option value="3" selected>3 · Intermediário</option>
+              <option value="4">4 · Avançado</option>
+              <option value="5">5 · Forte</option>
+            </select>
+          </label>
+        </div>
+
+        <p id="engine-warning" class="warning" role="alert" hidden></p>
+
+        <section class="moves" aria-labelledby="moves-heading">
+          <div class="moves-head">
+            <h2 id="moves-heading">Lances jogados</h2>
+            <span id="move-count" class="muted small">0</span>
+          </div>
+          <ol id="move-list" class="move-list">
+            <li class="empty">Nenhum lance ainda.</li>
+          </ol>
+        </section>
+      </section>
+
+      <aside class="panel chat-panel" aria-labelledby="chat-heading">
+        <header class="chat-head">
+          <div>
+            <h2 id="chat-heading">Treinador IA</h2>
+            <p class="muted small">Gemini 4 Hydrogen · via agy local</p>
+          </div>
+          <span class="chat-status" id="chat-status" data-state="ready">pronto</span>
+        </header>
+
+        <div class="chat-messages" id="chat-messages" role="log" aria-label="Conversa com o treinador">
+          <article class="chat-bubble trainer">
+            <div class="bubble-meta">Treinador</div>
+            <div class="bubble-text">Olá! Jogue um lance no tabuleiro. Quando o Stockfish apontar uma imprecisão, um erro ou uma gafe, eu explico o que aconteceu e qual era a melhor ideia. Você também pode me perguntar qualquer coisa sobre a posição.</div>
+          </article>
+        </div>
+
+        <form class="chat-form" id="chat-form">
+          <label class="sr-only" for="chat-input">Sua pergunta para o treinador</label>
+          <textarea
+            id="chat-input"
+            name="message"
+            rows="2"
+            maxlength="4000"
+            placeholder="Pergunte ao treinador…"
+          ></textarea>
+          <button id="chat-send" type="submit" disabled>Enviar</button>
+          <p class="chat-hint">O FEN e o PGN atuais são anexados automaticamente.</p>
+        </form>
+      </aside>
+    </main>
+
+    <footer class="app-footer">
+      <small>
+        Regras e tabuleiro: chess.js + Chessground (CDN) · Análise: Stockfish local ·
+        Treinador: agy local
+      </small>
+    </footer>
+  </div>
+
+  <noscript>
+    <p class="warning">Este treino precisa de JavaScript ativado no navegador.</p>
+  </noscript>
+</body>
+</html>
