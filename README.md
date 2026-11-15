@@ -201,6 +201,9 @@ o caminho do `agy`, se ele existe e qual `AGY_MODEL` está em uso.
   vermelho e o treinador explica o bloqueio.
 - Para fazer roque na interface, arraste o **rei duas casas** na direção da
   torre; a torre se move junto. Arrastar a torre não faz o roque.
+- Ao selecionar o rei, se houver roque disponível, aparece um aviso logo abaixo
+  do status, por exemplo `Roque disponível (O-O: clique em g1)`. Isso mostra
+  qual lado está legal na posição atual.
 - A partida atual sobrevive a um **F5**: posição, lista de lances, avaliação,
   orientação, nível do bot, nível da explicação, lousa aberta e conversa do chat
   são restaurados do `localStorage` do navegador. Se você atualizar no meio da

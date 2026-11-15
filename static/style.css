@@ -717,6 +717,18 @@ textarea {
   margin: 0.85rem 0;
 }
 
+.castling-hint {
+  margin: -0.35rem 0 0.65rem;
+  color: #fcd34d;
+  font-size: 0.68rem;
+  line-height: 1.4;
+  text-align: center;
+}
+
+.castling-hint[hidden] {
+  display: none;
+}
+
 .turn-pill,
 .quality-badge,
 .chat-status {

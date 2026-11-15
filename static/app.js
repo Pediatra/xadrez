@@ -52,6 +52,7 @@ const ui = {
   evalLabel: $("#eval-label"),
   turnPill: $("#turn-pill"),
   qualityBadge: $("#quality-badge"),
+  castlingHint: $("#castling-hint"),
   newGame: $("#new-game"),
   flipBoard: $("#flip-board"),
   undoMove: $("#undo-move"),
@@ -721,6 +722,7 @@ function init() {
     coordinates: false,
     animation: { enabled: true, duration: 230 },
     highlight: { lastMove: true, check: true },
+    events: { select: updateCastlingHint },
     movable: {
       free: false,
       color: "white",
@@ -917,6 +919,7 @@ function renderBoard(lastMove) {
 
   updateTurnPill();
   updateUndoButton();
+  hideCastlingHint();
 }
 
 function renderMoves() {
@@ -965,6 +968,36 @@ function updateResignButton() {
   ui.resignGame.disabled = state.analyzing || state.turnPending;
 }
 
+function hideCastlingHint() {
+  ui.castlingHint.hidden = true;
+  ui.castlingHint.textContent = "";
+}
+
+function updateCastlingHint(square) {
+  queueMicrotask(() => {
+    hideCastlingHint();
+    if (!ground || !canUserMove()) return;
+    if (ground.state.selected !== square) return;
+    if (square !== "e1" && square !== "e8") return;
+    if (state.game.turn() !== (square === "e1" ? "w" : "b")) return;
+
+    const moves = state.game.moves({ square, verbose: true });
+    const targets = new Set(moves.map((move) => move.to));
+    const white = state.game.turn() === "w";
+    const short = white ? "g1" : "g8";
+    const long = white ? "c1" : "c8";
+    const options = [];
+
+    if (targets.has(short)) options.push(`O-O: clique em ${short}`);
+    if (targets.has(long)) options.push(`O-O-O: clique em ${long}`);
+    if (options.length === 0) return;
+
+    ui.castlingHint.textContent =
+      `Roque disponível (${options.join(" · ")}) ou arraste o rei duas casas.`;
+    ui.castlingHint.hidden = false;
+  });
+}
+
 function updateTurnPill() {
   let text = "";
   let mode = "your-turn";
@@ -1002,6 +1035,7 @@ function setAnalyzing(active) {
   ui.boardShell.setAttribute("aria-busy", String(active));
   ui.botLevel.disabled = active;
   updateResignButton();
+  hideCastlingHint();
   if (active) {
     ui.boardOverlayText.textContent = "Analisando seu lance…";
   }
