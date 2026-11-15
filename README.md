@@ -178,14 +178,15 @@ o caminho do `agy`, se ele existe e qual `AGY_MODEL` está em uso.
   lances jogados.
 - Quando seu lance for classificado como **Imprecisão**, **Erro** ou **Gafe**,
   o tabuleiro desenha uma seta vermelha no lance jogado e uma verde no melhor
-  lance do Stockfish. A explicação automática do treinador começa em seguida.
-- Nesses lances, a **Lousa do treinador** abre à esquerda do tabuleiro principal,
-  com o chat à direita. Ela tem um tabuleiro virtual e duas abas: **Sua jogada**
-  mostra seu lance e a continuação que o adversário pode forçar; **Melhor linha**
-  mostra a sequência que o Stockfish preferia. Os controles permitem avançar,
-  voltar e reproduzir a sequência. Cada lance tem uma descrição em palavras,
-  como “cavalo branco de f4 captura peão preto em d5”. Em telas estreitas, os
-  painéis se empilham.
+  lance do Stockfish. O treinador **não** analisa automaticamente: aparece o
+  botão **Pedir análise ao treinador** ao lado da classificação.
+- Ao pedir a análise, a **Lousa do treinador** abre à esquerda do tabuleiro
+  principal, com o chat à direita. Ela tem um tabuleiro virtual e duas abas:
+  **Sua jogada** mostra seu lance e a continuação que o adversário pode forçar;
+  **Melhor linha** mostra a sequência que o Stockfish preferia. Os controles
+  permitem avançar, voltar e reproduzir a sequência. Cada lance tem uma
+  descrição em palavras, como “cavalo branco de f4 captura peão preto em d5”.
+  Em telas estreitas, os painéis se empilham.
 - O seletor no topo do chat define o nível da explicação: **Iniciante** (padrão),
   **Intermediário** ou **Avançado**. No modo iniciante, o treinador evita
   notação solta e explica a peça, as casas e a ideia por trás do lance.
@@ -193,7 +194,7 @@ o caminho do `agy`, se ele existe e qual `AGY_MODEL` está em uso.
   anexa silenciosamente o FEN e o PGN atuais a cada mensagem.
 - Enquanto o treinador pensa ou transmite a resposta, o botão **Parar**
   substitui **Enviar**. Ele cancela a chamada atual, descarta a resposta
-  parcial, esvazia a fila de explicações automáticas e libera o chat na hora.
+  parcial, esvazia a fila de pedidos pendentes e libera o chat na hora.
   No servidor, o processo `agy` daquela chamada é encerrado.
 - Quando o treinador cita uma casa ou um lance, ela vira uma referência clicável
   no texto. Passar o mouse (ou focar pelo teclado) destaca a casa no tabuleiro;

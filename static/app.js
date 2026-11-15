@@ -56,6 +56,7 @@ const ui = {
   evalLabel: $("#eval-label"),
   turnPill: $("#turn-pill"),
   qualityBadge: $("#quality-badge"),
+  analysisRequest: $("#request-analysis"),
   castlingHint: $("#castling-hint"),
   newGame: $("#new-game"),
   flipBoard: $("#flip-board"),
@@ -812,6 +813,7 @@ function bindEvents() {
   ui.flipBoard.addEventListener("click", flipBoard);
   ui.undoMove.addEventListener("click", undoMove);
   ui.resignGame.addEventListener("click", () => void resignGame());
+  ui.analysisRequest.addEventListener("click", requestTrainerAnalysis);
   ui.botLevel.addEventListener("change", () => {
     state.level = Number.parseInt(ui.botLevel.value, 10) || 3;
     void recordGameEvent("level_change", { level: state.level });
@@ -1097,12 +1099,27 @@ function showQuality(result) {
   ui.qualityBadge.dataset.quality = slug;
   ui.qualityBadge.textContent = result.classification;
   ui.qualityBadge.title = `Perda de ${(loss / 100).toFixed(2)} peões em relação ao melhor lance.`;
+  updateAnalysisRequest(result);
 }
 
 function hideQualityBadge() {
   ui.qualityBadge.hidden = true;
   ui.qualityBadge.removeAttribute("data-quality");
   ui.qualityBadge.removeAttribute("title");
+  ui.analysisRequest.hidden = true;
+  ui.analysisRequest.disabled = true;
+}
+
+function updateAnalysisRequest(result = state.lastAnalysis) {
+  const available =
+    Boolean(result) &&
+    result === state.lastAnalysis &&
+    BAD_CLASSIFICATIONS.has(result.classification) &&
+    Boolean(result.user_move?.uci) &&
+    Boolean(result.best_move?.uci);
+
+  ui.analysisRequest.hidden = !available;
+  ui.analysisRequest.disabled = !available || state.chatBusy;
 }
 
 function applyBoardShapes() {
@@ -1338,9 +1355,7 @@ async function handleAnalysisResult(result, signal) {
 
   const isBad = BAD_CLASSIFICATIONS.has(result.classification);
   if (isBad && result.best_move?.uci) {
-    showCoachBoard(result);
     drawArrows(result.user_move?.uci, result.best_move.uci);
-    enqueueAutoExplanation(result);
     updateTurnPill();
 
     // Deixa as setas visíveis na posição em que o erro aconteceu.
@@ -1935,18 +1950,31 @@ function trainerLevelLabel() {
   }[state.trainerLevel] ?? "iniciante";
 }
 
-function enqueueAutoExplanation(result) {
-  const best = result.best_move?.san ?? result.best_move?.uci ?? "o melhor lance do Stockfish";
-  const message =
-    `Meu lance ${result.user_move?.san ?? result.user_move?.uci} foi classificado como ` +
-    `${result.classification}. Quero entender o conceito tático ou estratégico por trás ` +
-    `do melhor lance ${best} e por que o meu lance foi pior.`;
+function requestTrainerAnalysis() {
+  const result = state.lastAnalysis;
+  const available =
+    Boolean(result) &&
+    !state.chatBusy &&
+    BAD_CLASSIFICATIONS.has(result.classification) &&
+    Boolean(result.user_move?.uci) &&
+    Boolean(result.best_move?.uci);
 
+  if (!available) return;
+
+  const played = result.user_move.san ?? result.user_move.uci;
+  const best = result.best_move.san ?? result.best_move.uci;
+  const message =
+    `Meu lance ${played} foi classificado como ${result.classification}. ` +
+    `Quero entender o conceito tático ou estratégico por trás do melhor lance ` +
+    `${best} e por que o meu lance foi pior.`;
+
+  showCoachBoard(result);
   appendChatNote(
-    `Stockfish: ${result.classification} · explicação para ${trainerLevelLabel()}`,
+    `Stockfish: ${result.classification} · análise para ${trainerLevelLabel()}`,
   );
   state.chatQueue.push(buildChatPayload(message, analysisContext(result)));
   pumpChatQueue();
+  saveSession();
 }
 
 function submitChat() {
@@ -1996,6 +2024,7 @@ function updateChatControls() {
   ui.chatSend.disabled = busy || ui.chatInput.value.trim().length === 0;
   ui.chatStop.hidden = !busy;
   ui.chatStop.disabled = !busy || state.chatStopping;
+  updateAnalysisRequest();
 
   if (busy) {
     if (state.chatStopping) {

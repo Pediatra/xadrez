@@ -74,6 +74,16 @@
         <div class="status-row">
           <span class="turn-pill" id="turn-pill" data-state="your-turn">Sua vez (brancas)</span>
           <span class="quality-badge" id="quality-badge" hidden></span>
+          <button
+            id="request-analysis"
+            type="button"
+            class="secondary outline analysis-request"
+            title="Abrir a lousa e pedir uma análise do treinador sobre este lance"
+            aria-label="Pedir ao treinador para analisar este lance"
+            hidden
+          >
+            Pedir análise ao treinador
+          </button>
         </div>
         <p class="castling-hint" id="castling-hint" hidden></p>
 
@@ -171,7 +181,7 @@
         <div class="chat-messages" id="chat-messages" role="log" aria-label="Conversa com o treinador">
           <article class="chat-bubble trainer">
             <div class="bubble-meta">Treinador</div>
-            <div class="bubble-text">Olá! Sou seu treinador e vou explicar em linguagem simples, sem presumir que você já conhece notação. Quando um lance merecer atenção, abro a lousa com a sequência e mostro no tabuleiro o que acontece. Você também pode me perguntar qualquer coisa sobre a posição.</div>
+            <div class="bubble-text">Olá! Sou seu treinador e vou explicar em linguagem simples, sem presumir que você já conhece notação. Quando um lance merecer atenção, use o botão Pedir análise ao treinador ao lado da classificação: abro a lousa com a sequência e explico o que acontece no tabuleiro. Você também pode me perguntar qualquer coisa sobre a posição.</div>
           </article>
         </div>
 

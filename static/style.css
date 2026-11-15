@@ -717,6 +717,23 @@ textarea {
   margin: 0.85rem 0;
 }
 
+.analysis-request {
+  width: auto;
+  margin: 0;
+  padding: 0.3rem 0.72rem;
+  border-color: color-mix(in srgb, var(--brand-strong) 42%, transparent) !important;
+  background: rgba(52, 211, 153, 0.08);
+  color: var(--brand) !important;
+  font-size: 0.68rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.analysis-request:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--brand-strong) 72%, transparent) !important;
+  background: rgba(52, 211, 153, 0.16);
+}
+
 .castling-hint {
   margin: -0.35rem 0 0.65rem;
   color: #fcd34d;
