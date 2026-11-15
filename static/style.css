@@ -1,70 +1,70 @@
 :root,
 [data-theme="dark"] {
   color-scheme: dark;
-  --pico-background-color: #14100d;
-  --pico-color: #f2e9e1;
-  --pico-muted-color: #a69689;
-  --pico-muted-border-color: #342a23;
-  --pico-primary: #fdba74;
-  --pico-primary-background: #fb923c;
-  --pico-primary-border: #fb923c;
-  --pico-primary-underline: rgba(251, 146, 60, 0.45);
-  --pico-primary-hover: #fed7aa;
-  --pico-primary-hover-background: #fdba74;
-  --pico-primary-hover-border: #fdba74;
-  --pico-primary-hover-underline: #fed7aa;
-  --pico-primary-focus: rgba(251, 146, 60, 0.34);
-  --pico-primary-inverse: #201206;
-  --pico-secondary: #d6c7ba;
-  --pico-secondary-background: #4a3d34;
-  --pico-secondary-border: #4a3d34;
-  --pico-secondary-underline: rgba(214, 199, 186, 0.45);
-  --pico-secondary-hover: #eadfd5;
-  --pico-secondary-hover-background: #5a4a3f;
-  --pico-secondary-hover-border: #5a4a3f;
-  --pico-secondary-focus: rgba(214, 199, 186, 0.24);
+  --pico-background-color: #0d1319;
+  --pico-color: #e6edf5;
+  --pico-muted-color: #94a6ba;
+  --pico-muted-border-color: #26313e;
+  --pico-primary: #93c5fd;
+  --pico-primary-background: #3b82f6;
+  --pico-primary-border: #3b82f6;
+  --pico-primary-underline: rgba(59, 130, 246, 0.45);
+  --pico-primary-hover: #bfdbfe;
+  --pico-primary-hover-background: #60a5fa;
+  --pico-primary-hover-border: #60a5fa;
+  --pico-primary-hover-underline: #bfdbfe;
+  --pico-primary-focus: rgba(59, 130, 246, 0.34);
+  --pico-primary-inverse: #0b1524;
+  --pico-secondary: #cbd5e1;
+  --pico-secondary-background: #334155;
+  --pico-secondary-border: #334155;
+  --pico-secondary-underline: rgba(203, 213, 225, 0.45);
+  --pico-secondary-hover: #e2e8f0;
+  --pico-secondary-hover-background: #475569;
+  --pico-secondary-hover-border: #475569;
+  --pico-secondary-focus: rgba(203, 213, 225, 0.24);
   --pico-secondary-inverse: #fff;
-  --pico-card-background-color: #1b1512;
-  --pico-card-border-color: #342a23;
-  --pico-card-sectioning-background-color: #1f1814;
-  --pico-form-element-background-color: #211a16;
-  --pico-form-element-border-color: #3a2f27;
-  --pico-form-element-color: #f2e9e1;
-  --pico-form-element-placeholder-color: #8f8076;
-  --pico-form-element-active-background-color: #261e19;
-  --pico-form-element-active-border-color: #fb923c;
-  --pico-form-element-focus-color: #fb923c;
-  --pico-form-element-selected-background-color: #33261d;
-  --pico-h1-color: #fbf5ef;
-  --pico-h2-color: #f5ece4;
-  --pico-h3-color: #eadfd5;
-  --pico-h4-color: #ddcfc3;
-  --pico-h5-color: #cbbcb0;
-  --pico-h6-color: #a69689;
-  --pico-code-background-color: #241c17;
-  --pico-code-color: #e7d6c7;
-  --pico-mark-background-color: #7c2d12;
-  --pico-mark-color: #ffedd5;
+  --pico-card-background-color: #141c26;
+  --pico-card-border-color: #26313e;
+  --pico-card-sectioning-background-color: #17202b;
+  --pico-form-element-background-color: #18212c;
+  --pico-form-element-border-color: #2c3947;
+  --pico-form-element-color: #e6edf5;
+  --pico-form-element-placeholder-color: #7f8fa3;
+  --pico-form-element-active-background-color: #1d2733;
+  --pico-form-element-active-border-color: #3b82f6;
+  --pico-form-element-focus-color: #3b82f6;
+  --pico-form-element-selected-background-color: #1c2a3d;
+  --pico-h1-color: #f1f5f9;
+  --pico-h2-color: #e8eef5;
+  --pico-h3-color: #dde5ee;
+  --pico-h4-color: #cfd9e5;
+  --pico-h5-color: #b9c6d6;
+  --pico-h6-color: #94a6ba;
+  --pico-code-background-color: #1a2431;
+  --pico-code-color: #dbe5f0;
+  --pico-mark-background-color: #1e3a8a;
+  --pico-mark-color: #dbeafe;
   --pico-table-row-stripped-background-color: rgba(255, 255, 255, 0.025);
-  --pico-blockquote-border-color: #3a2f27;
-  --pico-blockquote-footer-color: #a69689;
+  --pico-blockquote-border-color: #2c3947;
+  --pico-blockquote-footer-color: #94a6ba;
   --pico-border-radius: 0.45rem;
 
-  --brand: #fdba74;
-  --brand-strong: #fb923c;
-  --brand-rgb: 251, 146, 60;
+  --brand: #93c5fd;
+  --brand-strong: #3b82f6;
+  --brand-rgb: 59, 130, 246;
   --danger: #f87171;
   --warning: #fbbf24;
-  --panel-border: #342a23;
-  --panel-bg: #1b1512;
-  --soft-bg: #15100e;
-  --board-light: #f0d9b5;
-  --board-dark: #b58863;
+  --panel-border: #26313e;
+  --panel-bg: #141c26;
+  --soft-bg: #10171f;
+  --board-light: #e9edd4;
+  --board-dark: #7d945d;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
 }
 
 html {
-  scrollbar-color: #4a3d34 transparent;
+  scrollbar-color: #334155 transparent;
 }
 
 body {
@@ -166,7 +166,7 @@ textarea {
   padding: 0.22rem;
   border: 1px solid var(--panel-border);
   border-radius: 999px;
-  background: #17120f;
+  background: #10171f;
 }
 
 .view-tab {
@@ -614,7 +614,7 @@ textarea {
   overflow: hidden;
   border: 1px solid var(--panel-border);
   border-radius: 999px;
-  background: #171310;
+  background: #16202b;
   box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.55);
 }
 
@@ -623,7 +623,7 @@ textarea {
   inset-inline: 0;
   bottom: 0;
   height: 50%;
-  background: #f7f1ea;
+  background: #f7f9fc;
   transition: height 550ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
@@ -676,7 +676,7 @@ textarea {
   width: 100%;
   aspect-ratio: 1 / 1;
   overflow: hidden;
-  border: 2px solid #2b221c;
+  border: 2px solid #26313e;
   border-radius: 0.5rem;
   background: var(--board-dark);
   box-shadow: 0 12px 30px rgba(0, 0, 0, 0.34);
@@ -740,23 +740,23 @@ cg-board {
 }
 
 cg-board square.move-dest {
-  background: radial-gradient(rgba(28, 18, 6, 0.32) 21%, transparent 22%);
+  background: radial-gradient(rgba(11, 21, 36, 0.32) 21%, transparent 22%);
 }
 
 cg-board square.oc.move-dest {
-  background: radial-gradient(transparent 0 72%, rgba(28, 18, 6, 0.34) 73%);
+  background: radial-gradient(transparent 0 72%, rgba(11, 21, 36, 0.34) 73%);
 }
 
 cg-board square.move-dest:hover {
-  background: rgba(28, 18, 6, 0.16);
+  background: rgba(11, 21, 36, 0.16);
 }
 
 cg-board square.last-move {
-  background-color: rgba(251, 146, 60, 0.35);
+  background-color: rgba(59, 130, 246, 0.35);
 }
 
 cg-board square.selected {
-  background-color: rgba(251, 146, 60, 0.45);
+  background-color: rgba(59, 130, 246, 0.45);
 }
 
 cg-board square.current-premove {
@@ -862,9 +862,9 @@ cg-board square.current-premove {
 }
 
 .turn-pill[data-state="bot-turn"] {
-  border-color: #4a3d34;
-  background: rgba(214, 199, 186, 0.08);
-  color: #d6c7ba;
+  border-color: #334155;
+  background: rgba(203, 213, 225, 0.08);
+  color: #cbd5e1;
 }
 
 .turn-pill[data-state="over"] {
@@ -888,27 +888,27 @@ cg-board square.current-premove {
 }
 
 .quality-badge[data-quality="bom"] {
-  border-color: #2f6f5e;
-  background: #13302a;
-  color: #b8ead9;
+  border-color: #2f77c5;
+  background: #163a5f;
+  color: #dbeafe;
 }
 
 .quality-badge[data-quality="imprecisao"] {
   border-color: #b7791f;
-  background: #4a3210;
+  background: #423a10;
   color: #fde68a;
 }
 
 .quality-badge[data-quality="erro"] {
-  border-color: #c2611b;
-  background: #522410;
-  color: #fed7aa;
+  border-color: #dc2626;
+  background: #4a1616;
+  color: #fecaca;
 }
 
 .quality-badge[data-quality="gafe"] {
-  border-color: #b91c1c;
-  background: #541616;
-  color: #fecaca;
+  border-color: #ef4444;
+  background: #6b1a1a;
+  color: #fee2e2;
 }
 
 .controls {
@@ -1103,7 +1103,7 @@ cg-board square.current-premove {
   gap: 0.45rem 0.8rem;
   padding: 0.7rem 1rem;
   border-bottom: 1px solid var(--panel-border);
-  background: #181310;
+  background: #16202b;
 }
 
 .chat-head h2 {
@@ -1158,9 +1158,9 @@ cg-board square.current-premove {
 }
 
 .chat-status[data-state="queued"] {
-  border-color: #4a3d34;
-  background: rgba(214, 199, 186, 0.08);
-  color: #d6c7ba;
+  border-color: #334155;
+  background: rgba(203, 213, 225, 0.08);
+  color: #cbd5e1;
 }
 
 .chat-status[data-state="stopping"] {
@@ -1278,7 +1278,7 @@ cg-board square.current-premove {
   margin: 0 auto 0.4rem;
   aspect-ratio: 1 / 1;
   overflow: hidden;
-  border: 1px solid #2b221c;
+  border: 1px solid #26313e;
   border-radius: 0.4rem;
   background: var(--board-dark);
   box-shadow: 0 8px 20px rgba(0, 0, 0, 0.3);
@@ -1404,7 +1404,7 @@ cg-board square.current-premove {
   padding: 0.68rem 0.82rem;
   border: 1px solid var(--panel-border);
   border-radius: 0.85rem;
-  background: #201914;
+  background: #1b2430;
   font-size: 0.86rem;
   line-height: 1.52;
   overflow-wrap: anywhere;
@@ -1463,7 +1463,7 @@ cg-board square.current-premove {
 .square-ref.pinned {
   background: rgba(var(--brand-rgb), 0.16);
   border-bottom-color: rgba(var(--brand-rgb), 0.9);
-  color: #ffedd5;
+  color: #dbeafe;
   outline: none;
 }
 

@@ -139,7 +139,7 @@ const state = {
   evalByFen: new Map(),
   lastAnalysis: null,
   trainerLevel: "beginner",
-  boardTheme: "areia",
+  boardTheme: "verde",
   gameId: null,
   gamePromise: null,
   gameEpoch: 0,
@@ -308,13 +308,13 @@ function loadBoardTheme() {
     const saved = window.localStorage.getItem(BOARD_THEME_KEY);
     if (saved && BOARD_THEMES[saved]) return saved;
   } catch {
-    // localStorage pode estar bloqueado; usa o padrão areia.
+    // localStorage pode estar bloqueado; usa o padrão verde.
   }
-  return "areia";
+  return "verde";
 }
 
 function applyBoardTheme(name) {
-  const key = BOARD_THEMES[name] ? name : "areia";
+  const key = BOARD_THEMES[name] ? name : "verde";
   const theme = BOARD_THEMES[key];
   state.boardTheme = key;
 

@@ -175,8 +175,8 @@ o caminho do `agy`, se ele existe e qual `AGY_MODEL` está em uso.
   de 1 (Iniciante) a 5 (Forte).
 - **Cor do tabuleiro** troca o par de casas do tabuleiro principal e da lousa
   entre nove opções: Areia, Madeira, Verde, Azul, Cinza, Ardósia, Vinho, Ameixa
-  e Coral. A escolha fica salva no `localStorage` e vale para as próximas
-  partidas.
+  e Coral. O padrão é **Verde** e a escolha fica salva no `localStorage` e vale
+  para as próximas partidas.
 - **Novo Jogo**, **Inverter Tabuleiro** e **Desfazer Lance** controlam a partida.
 - A barra vertical mostra a avaliação da posição; o painel esquerdo lista os
   lances jogados.
