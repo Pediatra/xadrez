@@ -56,12 +56,18 @@
             <span class="eval-label" id="eval-label">0.00</span>
           </div>
 
-          <div class="board-shell" id="board-shell" aria-busy="false">
-            <div id="board" class="board"></div>
-            <div class="board-overlay" id="board-overlay" hidden>
-              <div class="spinner" aria-hidden="true"></div>
-              <span id="board-overlay-text">Analisando seu lance…</span>
+          <div class="board-frame">
+            <div class="board-coords board-coords-files" id="board-files-top" aria-hidden="true"></div>
+            <div class="board-coords board-coords-ranks" id="board-ranks-left" aria-hidden="true"></div>
+            <div class="board-shell" id="board-shell" aria-busy="false">
+              <div id="board" class="board"></div>
+              <div class="board-overlay" id="board-overlay" hidden>
+                <div class="spinner" aria-hidden="true"></div>
+                <span id="board-overlay-text">Analisando seu lance…</span>
+              </div>
             </div>
+            <div class="board-coords board-coords-ranks" id="board-ranks-right" aria-hidden="true"></div>
+            <div class="board-coords board-coords-files" id="board-files-bottom" aria-hidden="true"></div>
           </div>
         </div>
 

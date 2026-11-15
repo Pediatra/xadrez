@@ -597,8 +597,30 @@ textarea {
   white-space: nowrap;
 }
 
+.board-frame {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    ". files-top ."
+    "ranks-left board ranks-right"
+    ". files-bottom .";
+  gap: 0.3rem;
+  width: 100%;
+  min-width: 0;
+}
+
+#board-files-top {
+  grid-area: files-top;
+}
+
+#board-ranks-left {
+  grid-area: ranks-left;
+}
+
 .board-shell {
   position: relative;
+  grid-area: board;
   width: 100%;
   aspect-ratio: 1 / 1;
   overflow: hidden;
@@ -606,6 +628,39 @@ textarea {
   background: #b58863;
   box-shadow: 0 14px 34px rgba(0, 0, 0, 0.33);
   touch-action: none;
+}
+
+#board-ranks-right {
+  grid-area: ranks-right;
+}
+
+#board-files-bottom {
+  grid-area: files-bottom;
+}
+
+.board-coords {
+  display: flex;
+  color: color-mix(in srgb, var(--pico-muted-color) 72%, #ffffff);
+  font-family: var(--mono);
+  font-size: 0.66rem;
+  font-weight: 700;
+  line-height: 1;
+  user-select: none;
+}
+
+.board-coords-files {
+  justify-content: space-around;
+}
+
+.board-coords-ranks {
+  flex-direction: column;
+  justify-content: space-around;
+}
+
+.board-coords span {
+  display: grid;
+  flex: 1 1 0;
+  place-items: center;
 }
 
 .board {

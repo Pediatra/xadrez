@@ -33,6 +33,10 @@ const $ = (selector) => document.querySelector(selector);
 const ui = {
   board: $("#board"),
   boardShell: $("#board-shell"),
+  boardFilesTop: $("#board-files-top"),
+  boardFilesBottom: $("#board-files-bottom"),
+  boardRanksLeft: $("#board-ranks-left"),
+  boardRanksRight: $("#board-ranks-right"),
   boardOverlay: $("#board-overlay"),
   boardOverlayText: $("#board-overlay-text"),
   evalBar: $("#eval-bar"),
@@ -260,6 +264,7 @@ function init() {
   state.evalByFen.set(fenKey(START_FEN), NEUTRAL_EVAL);
   state.trainerLevel = loadTrainerLevel();
   ui.trainerLevel.value = state.trainerLevel;
+  renderBoardCoords();
 
   ground = Chessground(ui.board, {
     fen: state.game.fen(),
@@ -366,6 +371,31 @@ function bindEvents() {
     state.moveController?.abort();
     stopCoachPlayback();
   });
+}
+
+const BOARD_FILES = ["a", "b", "c", "d", "e", "f", "g", "h"];
+const BOARD_RANKS = ["8", "7", "6", "5", "4", "3", "2", "1"];
+
+function fillCoords(element, values) {
+  if (!element) return;
+  const spans = values.map((value) => {
+    const span = document.createElement("span");
+    span.textContent = value;
+    return span;
+  });
+  element.replaceChildren(...spans);
+}
+
+function renderBoardCoords() {
+  const files =
+    state.orientation === "white" ? BOARD_FILES : [...BOARD_FILES].reverse();
+  const ranks =
+    state.orientation === "white" ? BOARD_RANKS : [...BOARD_RANKS].reverse();
+
+  fillCoords(ui.boardFilesTop, files);
+  fillCoords(ui.boardFilesBottom, files);
+  fillCoords(ui.boardRanksLeft, ranks);
+  fillCoords(ui.boardRanksRight, ranks);
 }
 
 function renderBoard(lastMove) {
@@ -1124,6 +1154,7 @@ function startNewGame() {
 function flipBoard() {
   state.orientation = state.orientation === "white" ? "black" : "white";
   ground.set({ orientation: state.orientation });
+  renderBoardCoords();
   if (coach.ground) {
     coach.ground.set({ orientation: state.orientation });
     renderCoach();
