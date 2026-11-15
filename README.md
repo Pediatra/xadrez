@@ -1,12 +1,12 @@
 # Treino de Xadrez Local
 
-Aplicação web local de treino de xadrez: tabuleiro interativo, Stockfish para
-análise e um treinador Gemini 4 Hydrogen via CLI `agy`. O backend é FastAPI puro;
-o frontend é HTML, CSS e JavaScript vanilla carregado por CDN, sem build.
-
 > **Stockfish não está instalado nesta máquina.** Ele não existe em
 > `/usr/bin/stockfish` nem no `PATH`. Instale-o antes de usar a análise da
 > partida seguindo uma das opções abaixo.
+
+Aplicação web local de treino de xadrez: tabuleiro interativo, Stockfish para
+análise e um treinador Gemini 4 Hydrogen via CLI `agy`. O backend é FastAPI puro;
+o frontend é HTML, CSS e JavaScript vanilla carregado por CDN, sem build.
 
 ## 1. Instalar o Stockfish (Bazzite/Fedora Atomic)
 
