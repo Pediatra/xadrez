@@ -68,7 +68,7 @@ Depois, confirme novamente com `stockfish` e o comando `uci` acima.
 ### Opção B — pacote do sistema com `rpm-ostree` (exige reboot)
 
 ```bash
-rpm-ostree install stockfish
+sudo rpm-ostree install stockfish
 systemctl reboot
 ```
 
