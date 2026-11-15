@@ -137,6 +137,7 @@ Variáveis disponíveis:
 | `AGY_TIMEOUT_SECONDS` | `120` | Limite total de cada chamada ao treinador |
 | `AGY_MAX_CONCURRENCY` | `1` | Chamadas simultâneas ao CLI; a fila curta responde 429 quando lotada |
 | `AGY_SANDBOX` | `1` | Use `AGY_SANDBOX=0` se o ambiente recusar o sandbox |
+| `DATABASE_PATH` | `./xadrez.db` | Arquivo SQLite do histórico e do revisor |
 
 O `agy` usa o **login local da máquina**; não existe chave de API no projeto.
 Confira que o CLI está presente e autenticado neste host:
@@ -190,6 +191,11 @@ o caminho do `agy`, se ele existe e qual `AGY_MODEL` está em uso.
   notação solta e explica a peça, as casas e a ideia por trás do lance.
 - Você pode perguntar qualquer coisa no chat a qualquer momento. O frontend
   anexa silenciosamente o FEN e o PGN atuais a cada mensagem.
+- A aba **Revisor** mostra o histórico salvo em SQLite: partidas, todos os
+  lances com classificação e avaliação, lances desfeitos, estatísticas de
+  precisão/perda média, fases e peças mais frágeis, aberturas repetidas e
+  tendência entre partidas. Ela também gera feedback com o `agy` para o
+  histórico geral ou para uma partida específica.
 
 Classificação usada (perda em centipawns em relação ao melhor lance):
 
@@ -252,14 +258,34 @@ O backend executa o CLI local com `asyncio.create_subprocess_exec` (sem shell),
 envia uma única linha NDJSON no `stdin` e converte o NDJSON do `stdout` em SSE.
 O processo é encerrado no `finally` em caso de timeout ou desconexão do cliente.
 
+### Histórico e revisor
+
+- `POST /games` cria uma partida no SQLite.
+- `GET /games` lista as partidas com resumo de precisão e classificações.
+- `GET /games/{id}` devolve todos os lances, lances desfeitos, eventos, PGN e
+  estatísticas da partida.
+- `POST /games/{id}/undo` registra o desfazer; os lances não são apagados, são
+  marcados como desfeitos.
+- `POST /games/{id}/end` encerra a partida quando você começa outra.
+- `POST /games/{id}/event` registra ações como inverter tabuleiro e trocar nível.
+- `GET /review/stats` agrega o histórico para o revisor.
+- `POST /review/feedback` gera o parecer geral via SSE.
+- `POST /review/game/{id}/feedback` gera a análise completa de uma partida via
+  SSE, incluindo os lances desfeitos.
+
 ## 7. Limitações
 
 - **A análise depende do Stockfish instalado e funcional.** Sem o binário, ou se
   ele não responder a `uci`, o tabuleiro continua abrindo, mas
   `/move-and-analyze` retorna erro e a barra de avaliação não recebe análises.
-- **O chat depende do `agy` autenticado na máquina.** Não há chave de API nem
-  chamada HTTP a um provedor. Em outro host, sem o CLI e o login local, o
-  `/chat` responde `agy não encontrado neste host` e o treinador não funciona.
+- **O chat e o revisor dependem do `agy` autenticado na máquina.** Não há chave
+  de API nem chamada HTTP a um provedor. Em outro host, sem o CLI e o login
+  local, o `/chat` e os endpoints `/review/*` respondem
+  `agy não encontrado neste host` e não funcionam.
+- **O histórico é local e não é sincronizado.** Fica no SQLite configurado em
+  `DATABASE_PATH`; para levar o histórico a outra máquina, copie o arquivo do
+  banco. O conteúdo das conversas do chat não é gravado, apenas partidas,
+  lances e ações de jogo.
 - **A primeira resposta do treinador leva alguns segundos** porque o CLI inicia
   um processo por chamada. Não há daemon persistente; cada mensagem paga o custo
   de inicialização do `agy`. O limite padrão é de 120 segundos.
@@ -272,6 +298,7 @@ O processo é encerrado no `finally` em caso de timeout ou desconexão do client
 ```text
 .
 ├── main.py            # FastAPI, Stockfish, SSE do agy, /health
+├── storage.py         # SQLite: partidas, lances, eventos e revisor
 ├── requirements.txt
 ├── .env.example
 ├── README.md
@@ -279,6 +306,8 @@ O processo é encerrado no `finally` em caso de timeout ou desconexão do client
     ├── index.html     # layout semântico
     ├── style.css      # Pico CSS + ajustes
     └── app.js         # chess.js, Chessground, fetch/SSE
+
+xadrez.db               # criado em runtime; fica fora do Git
 ```
 
 Não há React, Node.js, jQuery, npm nem etapa de build. O servidor inteiro sobe
@@ -335,3 +364,45 @@ systemctl --user restart xadrez.service
 O `/health` deve mostrar `status: "ok"` e o Stockfish 19 em
 `stockfish.name`, com `uci: true`. Se aparecer `degraded`, confira o caminho em
 `STOCKFISH_PATH`, a permissão de execução do binário e reinicie o serviço.
+
+## 10. Histórico SQLite e Revisor
+
+O arquivo padrão é `./xadrez.db` (configurável em `DATABASE_PATH`) e fica fora do
+Git. Ele guarda:
+
+- partidas: início, fim, nível do bot, FEN inicial/atual e resultado;
+- lances do aluno e do Stockfish, com FEN antes/depois, classificação, perda de
+  centipawns, avaliações, melhor lance, PV e linha de refutação;
+- lances desfeitos, marcados com `undone = 1` em vez de apagados;
+- eventos de jogo: início, fim, desfazer, inverter tabuleiro e troca de nível.
+
+A aba **Revisor** lê esse banco e mostra:
+
+- cartões de partidas, lances analisados, precisão estimada, perda média,
+  erros/gafes e tendência recente;
+- fase mais frágil, peça que mais erra e aberturas mais repetidas;
+- a lista completa de lances da partida selecionada, com classificação,
+  avaliação e melhor lance;
+- os lances desfeitos da partida;
+- **Feedback geral** (histórico agregado) e **Analisar esta partida** (todos os
+  lances ativos + desfeitos), ambos com streaming do `agy`.
+
+A **precisão estimada** é uma métrica interna, não a precisão oficial do
+Lichess/Chess.com: Excelente = 1,0; Bom = 0,8; Imprecisão = 0,5; Erro = 0,2;
+Gafe = 0,0, ponderada pela quantidade de lances analisados. A **perda média**
+é a média simples dos centipawns perdidos por lance analisado.
+
+Para fazer backup com o serviço parado:
+
+```bash
+systemctl --user stop xadrez.service
+cp xadrez.db xadrez-backup.db
+systemctl --user start xadrez.service
+```
+
+Para começar um histórico limpo, pare o serviço, mova `xadrez.db` e os arquivos
+`xadrez.db-wal`/`xadrez.db-shm` para outro lugar e inicie de novo.
+
+O conteúdo das conversas do treinador não é gravado. Ao pedir um parecer, o
+backend envia ao `agy` as estatísticas agregadas e, no caso de uma partida, a
+lista de lances/classificações; o banco em si permanece local.

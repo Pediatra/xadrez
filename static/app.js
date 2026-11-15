@@ -66,6 +66,27 @@ const ui = {
   coachNext: $("#coach-next"),
   coachStep: $("#coach-step"),
   coachMoves: $("#coach-moves"),
+  viewTrainer: $("#view-trainer"),
+  viewReview: $("#view-review"),
+  trainerView: $("#trainer-view"),
+  reviewView: $("#review-view"),
+  reviewCount: $("#review-count"),
+  reviewRefresh: $("#review-refresh"),
+  reviewOverall: $("#review-overall"),
+  reviewStats: $("#review-stats"),
+  reviewGamesCount: $("#review-games-count"),
+  reviewGames: $("#review-games"),
+  reviewEmpty: $("#review-empty"),
+  reviewContent: $("#review-content"),
+  reviewDetailTitle: $("#review-detail-title"),
+  reviewGameSubtitle: $("#review-game-subtitle"),
+  reviewGameFeedback: $("#review-game-feedback"),
+  reviewGameSummary: $("#review-game-summary"),
+  reviewMoves: $("#review-moves"),
+  reviewUndoneWrap: $("#review-undone-wrap"),
+  reviewUndone: $("#review-undone"),
+  reviewAiMessages: $("#review-ai-messages"),
+  reviewAiStatus: $("#review-ai-status"),
 };
 
 const state = {
@@ -82,6 +103,13 @@ const state = {
   evalByFen: new Map(),
   lastAnalysis: null,
   trainerLevel: "beginner",
+  gameId: null,
+  gamePromise: null,
+  gameEpoch: 0,
+  reviewBusy: false,
+  reviewLoading: false,
+  reviewGameId: null,
+  reviewStats: null,
 };
 
 const coach = {
@@ -95,6 +123,7 @@ const coach = {
 
 let ground = null;
 let scrollFrame = null;
+let reviewScrollFrame = null;
 
 function fenKey(fen) {
   return fen.split(" ").slice(0, 4).join(" ");
@@ -102,6 +131,84 @@ function fenKey(fen) {
 
 function delay(ms) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+async function startGameRecord() {
+  const response = await fetch("/games", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      level: state.level,
+      student_level: state.trainerLevel,
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(await readHttpError(response));
+  }
+  return response.json();
+}
+
+function ensureGameRecord() {
+  if (state.gameId) return Promise.resolve(state.gameId);
+  if (state.gamePromise) return state.gamePromise;
+
+  const epoch = state.gameEpoch;
+  state.gamePromise = startGameRecord()
+    .then((game) => {
+      if (epoch !== state.gameEpoch) return null;
+      state.gameId = game.id;
+      return game.id;
+    })
+    .finally(() => {
+      if (epoch === state.gameEpoch) {
+        state.gamePromise = null;
+      }
+    });
+  return state.gamePromise;
+}
+
+async function endGameRecord(gameId, reason, result = null) {
+  if (!gameId) return;
+  try {
+    await fetch(`/games/${gameId}/end`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason, result }),
+    });
+  } catch (error) {
+    console.warn("Não foi possível encerrar a partida no histórico:", error);
+  }
+}
+
+async function recordUndo(gameId, plies) {
+  if (!gameId) return;
+  try {
+    await fetch(`/games/${gameId}/undo`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        plies,
+        fen: state.game.fen(),
+        pgn: state.game.pgn(),
+        reason: "undo",
+      }),
+    });
+  } catch (error) {
+    console.warn("Não foi possível registrar o desfazer:", error);
+  }
+}
+
+async function recordGameEvent(type, payload = {}) {
+  if (!state.gameId) return;
+  try {
+    await fetch(`/games/${state.gameId}/event`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type, payload }),
+    });
+  } catch (error) {
+    console.warn("Não foi possível registrar o evento:", error);
+  }
 }
 
 function canUserMove() {
@@ -179,7 +286,14 @@ function init() {
   renderMoves();
   updateEval(NEUTRAL_EVAL);
   updateChatControls();
+  updateReviewControls();
   void checkHealth();
+  void ensureGameRecord().catch((error) => {
+    console.warn("Não foi possível iniciar o histórico SQLite:", error);
+    appendChatNote(
+      "⚠️ O histórico SQLite não iniciou. O jogo funciona, mas esta partida não será salva.",
+    );
+  });
 }
 
 function bindEvents() {
@@ -188,6 +302,7 @@ function bindEvents() {
   ui.undoMove.addEventListener("click", undoMove);
   ui.botLevel.addEventListener("change", () => {
     state.level = Number.parseInt(ui.botLevel.value, 10) || 3;
+    void recordGameEvent("level_change", { level: state.level });
   });
 
   ui.trainerLevel.addEventListener("change", () => {
@@ -215,6 +330,25 @@ function bindEvents() {
     renderCoach();
   });
   ui.coachPlay.addEventListener("click", toggleCoachPlayback);
+
+  ui.viewTrainer.addEventListener("click", () => setView("trainer"));
+  ui.viewReview.addEventListener("click", () => setView("review"));
+  ui.reviewRefresh.addEventListener("click", () => void loadReview());
+  ui.reviewOverall.addEventListener("click", () =>
+    void streamReviewFeedback(
+      "/review/feedback",
+      { student_level: state.trainerLevel },
+      "Feedback geral",
+    ),
+  );
+  ui.reviewGameFeedback.addEventListener("click", () => {
+    if (!state.reviewGameId) return;
+    void streamReviewFeedback(
+      `/review/game/${state.reviewGameId}/feedback`,
+      { student_level: state.trainerLevel },
+      `Análise da partida #${state.reviewGameId}`,
+    );
+  });
 
   ui.chatForm.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -291,7 +425,8 @@ function renderMoves() {
 }
 
 function updateUndoButton() {
-  ui.undoMove.disabled = state.game.history().length === 0;
+  ui.undoMove.disabled =
+    state.analyzing || state.game.history().length === 0;
 }
 
 function updateTurnPill() {
@@ -334,6 +469,7 @@ function setAnalyzing(active) {
     ui.boardOverlayText.textContent = "Analisando seu lance…";
   }
   updateTurnPill();
+  updateUndoButton();
 }
 
 function updateEval(evaluation) {
@@ -491,10 +627,21 @@ async function analyzeUserMove({ fenBefore, fenAfterUser, uci, lastMove }) {
   state.moveController = controller;
 
   try {
+    const gameId = await ensureGameRecord().catch((error) => {
+      console.warn("Não foi possível obter o id da partida:", error);
+      return null;
+    });
+    if (controller.signal.aborted) return;
+
     const response = await fetch("/move-and-analyze", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ fen: fenBefore, move: uci, level: state.level }),
+      body: JSON.stringify({
+        fen: fenBefore,
+        move: uci,
+        level: state.level,
+        game_id: gameId,
+      }),
       signal: controller.signal,
     });
 
@@ -946,6 +1093,10 @@ function rollbackMove(fenAfterUser, message) {
 
 function startNewGame() {
   state.moveController?.abort();
+  const previousGameId = state.gameId;
+  state.gameEpoch += 1;
+  state.gameId = null;
+  state.gamePromise = null;
   state.game = new Chess();
   state.boardLocked = false;
   state.analyzing = false;
@@ -958,6 +1109,15 @@ function startNewGame() {
   renderBoard();
   renderMoves();
   updateEval(NEUTRAL_EVAL);
+  if (previousGameId) {
+    void endGameRecord(previousGameId, "new_game");
+  }
+  void ensureGameRecord().catch((error) => {
+    console.warn("Não foi possível iniciar o histórico do novo jogo:", error);
+    appendChatNote(
+      "⚠️ O novo jogo não pôde ser salvo no histórico SQLite.",
+    );
+  });
   appendChatNote("Novo jogo iniciado.");
 }
 
@@ -969,6 +1129,7 @@ function flipBoard() {
     renderCoach();
   }
   ui.evalBar.classList.toggle("flipped", state.orientation === "black");
+  void recordGameEvent("flip_board", { orientation: state.orientation });
 }
 
 function undoMove() {
@@ -988,6 +1149,10 @@ function undoMove() {
     undone += 1;
     if (state.game.turn() === "w") break;
   } while (undone < 2 && state.game.history().length > 0);
+
+  if (state.gameId) {
+    void recordUndo(state.gameId, undone);
+  }
 
   renderBoard(lastMoveFromHistory());
   renderMoves();
@@ -1162,7 +1327,7 @@ async function streamTrainerReply(payload) {
   }
 }
 
-async function consumeSSE(stream, bubble, textElement) {
+async function consumeSSE(stream, bubble, textElement, onUpdate = scrollChatToBottom) {
   const reader = stream.getReader();
   const decoder = new TextDecoder("utf-8");
   let buffer = "";
@@ -1192,12 +1357,12 @@ async function consumeSSE(stream, bubble, textElement) {
         bubble.classList.remove("is-thinking");
       }
       textElement.textContent += data.delta;
-      scrollChatToBottom();
+      onUpdate();
     }
 
     if (typeof data.error === "string" && data.error.length > 0) {
       sawError = true;
-      appendBubbleError(bubble, data.error);
+      appendBubbleError(bubble, data.error, onUpdate);
     }
 
     if (data.done === true) {
@@ -1237,6 +1402,7 @@ async function consumeSSE(stream, bubble, textElement) {
     appendBubbleError(
       bubble,
       "A conexão com o treinador terminou antes do sinal de conclusão.",
+      onUpdate,
     );
   }
 }
@@ -1289,13 +1455,13 @@ function appendChatNote(message) {
   scrollChatToBottom();
 }
 
-function appendBubbleError(bubble, message) {
+function appendBubbleError(bubble, message, onUpdate = scrollChatToBottom) {
   const text = bubble.querySelector(".bubble-text");
   const prefix = text.textContent.trim().length > 0 ? "\n\n" : "";
   text.textContent += `${prefix}⚠️ ${message}`;
   bubble.classList.add("error");
   bubble.classList.remove("is-thinking");
-  scrollChatToBottom();
+  onUpdate();
 }
 
 function scrollChatToBottom() {
@@ -1304,6 +1470,474 @@ function scrollChatToBottom() {
     scrollFrame = null;
     ui.chatMessages.scrollTop = ui.chatMessages.scrollHeight;
   });
+}
+
+function scrollReviewToBottom() {
+  if (reviewScrollFrame !== null) return;
+  reviewScrollFrame = window.requestAnimationFrame(() => {
+    reviewScrollFrame = null;
+    ui.reviewAiMessages.scrollTop = ui.reviewAiMessages.scrollHeight;
+  });
+}
+
+function formatReviewDate(iso) {
+  if (!iso) return "data desconhecida";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) {
+    return iso.slice(0, 16).replace("T", " ");
+  }
+  return date.toLocaleString("pt-BR", {
+    dateStyle: "short",
+    timeStyle: "short",
+  });
+}
+
+function reviewResultLabel(game) {
+  if (game.result === "1-0") return "1–0";
+  if (game.result === "0-1") return "0–1";
+  if (game.result === "1/2-1/2") return "empate";
+  return game.game_over ? "finalizada" : "em andamento";
+}
+
+function makeReviewStat(label, value, note) {
+  const card = document.createElement("div");
+  card.className = "review-stat";
+
+  const labelElement = document.createElement("div");
+  labelElement.className = "review-stat-label";
+  labelElement.textContent = label;
+
+  const valueElement = document.createElement("div");
+  valueElement.className = "review-stat-value";
+  valueElement.textContent = value;
+
+  const noteElement = document.createElement("div");
+  noteElement.className = "review-stat-note";
+  noteElement.textContent = note;
+
+  card.append(labelElement, valueElement, noteElement);
+  return card;
+}
+
+function renderReviewStats(stats) {
+  ui.reviewStats.replaceChildren();
+
+  const trend = stats.trend || {};
+  const classifications = stats.classifications || {};
+  const recent = trend.recent_accuracy;
+  const previous = trend.previous_accuracy;
+  const trendNote =
+    recent === null || recent === undefined
+      ? "sem dados suficientes"
+      : previous === null || previous === undefined
+        ? `precisão recente ${recent}%`
+        : `recente ${recent}% · anterior ${previous}%`;
+
+  ui.reviewStats.append(
+    makeReviewStat(
+      "Partidas",
+      String(stats.games ?? 0),
+      "com lances registrados",
+    ),
+    makeReviewStat(
+      "Lances analisados",
+      String(stats.analyzed_user_moves ?? 0),
+      `${stats.bad_moves ?? 0} ruins`,
+    ),
+    makeReviewStat(
+      "Precisão estimada",
+      stats.accuracy === null || stats.accuracy === undefined
+        ? "—"
+        : `${stats.accuracy}%`,
+      trendNote,
+    ),
+    makeReviewStat(
+      "Perda média",
+      stats.avg_cp_loss === null || stats.avg_cp_loss === undefined
+        ? "—"
+        : `${stats.avg_cp_loss} cp`,
+      `${stats.bad_rate ?? "—"}% de lances ruins`,
+    ),
+    makeReviewStat(
+      "Erros + gafes",
+      String(stats.blunders ?? 0),
+      `Excelente: ${classifications.Excelente ?? 0} · Bom: ${classifications.Bom ?? 0}`,
+    ),
+  );
+
+  const phaseItems = Object.entries(stats.phases || {})
+    .filter(([, item]) => item.total > 0 && item.bad_rate !== null)
+    .sort(([, a], [, b]) => b.bad_rate - a.bad_rate);
+  const pieceItems = Object.entries(stats.pieces || {})
+    .filter(([, item]) => item.total > 0 && item.bad_rate !== null)
+    .sort(([, a], [, b]) => b.bad_rate - a.bad_rate);
+  const opening = (stats.openings || [])[0];
+
+  const insights = document.createElement("div");
+  insights.className = "review-stat review-stat-wide";
+
+  const insightTitle = document.createElement("div");
+  insightTitle.className = "review-stat-label";
+  insightTitle.textContent = "Padrões do histórico";
+  insights.append(insightTitle);
+
+  const insightText = document.createElement("div");
+  insightText.className = "review-insights-text";
+  insightText.textContent = [
+    phaseItems.length
+      ? `Fase mais frágil: ${phaseItems[0][0]} (${phaseItems[0][1].bad_rate}% de lances ruins)`
+      : "Fase mais frágil: sem dados",
+    pieceItems.length
+      ? `Peça que mais erra: ${pieceItems[0][0]} (${pieceItems[0][1].bad_rate}%)`
+      : "Peça que mais erra: sem dados",
+    opening
+      ? `Sequência inicial mais repetida: ${opening.line} (${opening.count}x)`
+      : "Sequência inicial: sem dados",
+  ].join(" · ");
+  insights.append(insightText);
+  ui.reviewStats.append(insights);
+}
+
+function renderReviewGames(games) {
+  ui.reviewGames.replaceChildren();
+  ui.reviewGamesCount.textContent = String(games.length);
+  ui.reviewCount.textContent = String(games.length);
+  ui.reviewCount.hidden = games.length === 0;
+
+  if (games.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "review-ai-hint";
+    empty.textContent = "Nenhuma partida com lances ainda.";
+    ui.reviewGames.append(empty);
+    return;
+  }
+
+  for (const game of games) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "review-game-button";
+    button.dataset.gameId = String(game.id);
+    button.setAttribute(
+      "aria-current",
+      String(game.id === state.reviewGameId),
+    );
+
+    const top = document.createElement("div");
+    top.className = "review-game-top";
+    const title = document.createElement("span");
+    title.textContent = `Partida #${game.id}`;
+    const result = document.createElement("span");
+    result.textContent = reviewResultLabel(game);
+    top.append(title, result);
+
+    const meta = document.createElement("div");
+    meta.className = "review-game-meta";
+    meta.textContent =
+      `${formatReviewDate(game.started_at)} · nível ${game.level} · ` +
+      `${game.analyzed_user_moves} lances analisados · ` +
+      `perda média ${game.avg_cp_loss ?? "—"} cp · ` +
+      `precisão ${game.accuracy ?? "—"}%`;
+
+    const tags = document.createElement("div");
+    tags.className = "review-game-tags";
+    for (const label of ["Imprecisão", "Erro", "Gafe"]) {
+      const count = game.classifications?.[label] ?? 0;
+      if (count > 0) {
+        const tag = document.createElement("span");
+        tag.className = "review-tag";
+        tag.textContent = `${count} ${label.toLowerCase()}${count > 1 ? "s" : ""}`;
+        tags.append(tag);
+      }
+    }
+    if (game.undone_plies > 0) {
+      const tag = document.createElement("span");
+      tag.className = "review-tag";
+      tag.textContent = `${game.undone_plies} desfeito${game.undone_plies > 1 ? "s" : ""}`;
+      tags.append(tag);
+    }
+
+    button.append(top, meta);
+    if (tags.children.length) button.append(tags);
+    button.addEventListener("click", () => {
+      if (!state.reviewBusy) void selectReviewGame(game.id);
+    });
+    ui.reviewGames.append(button);
+  }
+}
+
+function updateReviewSelection() {
+  [...ui.reviewGames.querySelectorAll(".review-game-button")].forEach((button) => {
+    button.setAttribute(
+      "aria-current",
+      String(Number(button.dataset.gameId) === state.reviewGameId),
+    );
+  });
+}
+
+function renderReviewGame(data) {
+  const game = data.game;
+  const summary = data.summary || {};
+  state.reviewGameId = game.id;
+
+  ui.reviewEmpty.hidden = true;
+  ui.reviewContent.hidden = false;
+  ui.reviewDetailTitle.textContent = `Partida #${game.id}`;
+  ui.reviewGameSubtitle.textContent =
+    `${formatReviewDate(game.started_at)} · nível ${game.level} · ` +
+    `resultado ${reviewResultLabel(game)}`;
+
+  ui.reviewGameSummary.replaceChildren();
+  const counts = summary.classifications || {};
+  for (const label of ["Excelente", "Bom", "Imprecisão", "Erro", "Gafe"]) {
+    const count = counts[label] ?? 0;
+    if (count === 0) continue;
+    const badge = document.createElement("span");
+    badge.className = "quality-badge";
+    badge.dataset.quality = QUALITY_SLUGS[label] ?? "";
+    badge.textContent = `${label}: ${count}`;
+    ui.reviewGameSummary.append(badge);
+  }
+  const metrics = [
+    `Lances: ${summary.plies ?? 0}`,
+    `Perda média: ${summary.avg_cp_loss ?? "—"} cp`,
+    `Precisão: ${summary.accuracy ?? "—"}%`,
+  ];
+  for (const text of metrics) {
+    const tag = document.createElement("span");
+    tag.className = "review-tag";
+    tag.textContent = text;
+    ui.reviewGameSummary.append(tag);
+  }
+
+  ui.reviewMoves.replaceChildren();
+  for (const move of data.moves || []) {
+    const row = document.createElement("div");
+    row.className = "review-move";
+    const isBad = BAD_CLASSIFICATIONS.has(move.classification);
+    if (isBad) row.classList.add("is-bad");
+
+    const number = document.createElement("span");
+    number.className = "move-no";
+    number.textContent = `${move.move_number}${move.color === "w" ? "." : "..."}`;
+
+    const actor = document.createElement("span");
+    actor.className = "move-actor";
+    actor.textContent = move.actor === "user" ? "Você" : "Bot";
+
+    const san = document.createElement("span");
+    san.className = "move-san";
+    san.textContent = move.san;
+
+    const detail = document.createElement("span");
+    detail.className = "move-detail";
+    if (move.classification) {
+      const badge = document.createElement("span");
+      badge.className = "quality-badge compact";
+      badge.dataset.quality = QUALITY_SLUGS[move.classification] ?? "";
+      badge.textContent = move.classification;
+      detail.append(badge);
+    }
+    if (move.cp_loss !== null && move.cp_loss !== undefined) {
+      const loss = document.createElement("span");
+      loss.textContent = `−${move.cp_loss} cp`;
+      detail.append(loss);
+    }
+    if (move.eval_before || move.eval_after) {
+      const evaluation = document.createElement("span");
+      evaluation.className = "review-eval";
+      evaluation.textContent = `${move.eval_before ?? "—"} → ${move.eval_after ?? "—"}`;
+      detail.append(evaluation);
+    }
+    if (move.actor === "user" && isBad && move.best_move_san) {
+      const best = document.createElement("span");
+      best.textContent = `melhor: ${move.best_move_san}`;
+      detail.append(best);
+    }
+
+    row.append(number, actor, san, detail);
+    ui.reviewMoves.append(row);
+  }
+
+  const undone = data.undone_moves || [];
+  ui.reviewUndoneWrap.hidden = undone.length === 0;
+  ui.reviewUndone.replaceChildren();
+  if (undone.length > 0) {
+    const list = document.createElement("div");
+    list.className = "review-undone-list";
+    for (const move of undone) {
+      const item = document.createElement("span");
+      item.textContent =
+        `${move.move_number}${move.color === "w" ? "." : "..."} ${move.san} ` +
+        `[${move.actor === "user" ? "você" : "bot"}] · ` +
+        `${move.classification ?? "sem classificação"}`;
+      list.append(item);
+    }
+    const summaryElement = ui.reviewUndoneWrap.querySelector("summary");
+    summaryElement.textContent = `Lances desfeitos nesta partida (${undone.length})`;
+    ui.reviewUndone.append(list);
+  }
+
+  updateReviewSelection();
+  updateReviewControls();
+}
+
+async function selectReviewGame(gameId) {
+  if (state.reviewBusy) return;
+  try {
+    const response = await fetch(`/games/${gameId}`);
+    if (!response.ok) {
+      throw new Error(await readHttpError(response));
+    }
+    const data = await response.json();
+    renderReviewGame(data);
+  } catch (error) {
+    ui.reviewEmpty.hidden = false;
+    ui.reviewEmpty.textContent = `Não foi possível abrir a partida: ${error.message}`;
+    ui.reviewContent.hidden = true;
+  }
+}
+
+async function loadReview() {
+  if (state.reviewLoading) return;
+  state.reviewLoading = true;
+  updateReviewControls();
+
+  try {
+    const [statsResponse, gamesResponse] = await Promise.all([
+      fetch("/review/stats"),
+      fetch("/games?limit=50"),
+    ]);
+    if (!statsResponse.ok) {
+      throw new Error(await readHttpError(statsResponse));
+    }
+    if (!gamesResponse.ok) {
+      throw new Error(await readHttpError(gamesResponse));
+    }
+
+    const stats = await statsResponse.json();
+    const gamesPayload = await gamesResponse.json();
+    const games = gamesPayload.games || [];
+    state.reviewStats = stats;
+    renderReviewStats(stats);
+    renderReviewGames(games);
+    ui.reviewEmpty.hidden = games.length > 0;
+    ui.reviewContent.hidden = games.length === 0;
+    ui.reviewGameFeedback.disabled = games.length === 0;
+
+    if (games.length === 0) {
+      ui.reviewEmpty.textContent =
+        "Jogue algumas partidas no modo Treino. Cada lance analisado aparece aqui.";
+      state.reviewGameId = null;
+      updateReviewControls();
+      return;
+    }
+
+    const selectedId = games.some((game) => game.id === state.reviewGameId)
+      ? state.reviewGameId
+      : games[0].id;
+    await selectReviewGame(selectedId);
+  } catch (error) {
+    ui.reviewEmpty.hidden = false;
+    ui.reviewEmpty.textContent = `Não foi possível carregar o revisor: ${error.message}`;
+    ui.reviewContent.hidden = true;
+    ui.reviewGames.replaceChildren();
+    ui.reviewStats.replaceChildren();
+    ui.reviewCount.hidden = true;
+  } finally {
+    state.reviewLoading = false;
+    updateReviewControls();
+  }
+}
+
+function setView(view) {
+  const review = view === "review";
+  ui.trainerView.hidden = review;
+  ui.reviewView.hidden = !review;
+  ui.viewTrainer.setAttribute("aria-selected", String(!review));
+  ui.viewReview.setAttribute("aria-selected", String(review));
+
+  if (review) {
+    window.scrollTo({ top: 0, behavior: "smooth" });
+    if (!state.reviewBusy) void loadReview();
+  }
+}
+
+function updateReviewControls() {
+  const busy = state.reviewLoading || state.reviewBusy;
+  const hasOverallData = (state.reviewStats?.analyzed_user_moves ?? 0) > 0;
+  ui.reviewGameFeedback.disabled = busy || !state.reviewGameId;
+  ui.reviewOverall.disabled = busy || !hasOverallData;
+  ui.reviewRefresh.disabled = busy;
+}
+
+function createReviewBubble(label) {
+  const bubble = document.createElement("article");
+  bubble.className = "chat-bubble trainer is-thinking";
+
+  const meta = document.createElement("div");
+  meta.className = "bubble-meta";
+  meta.textContent = label;
+
+  const thinking = document.createElement("div");
+  thinking.className = "thinking";
+  const dots = document.createElement("span");
+  dots.className = "thinking-dots";
+  dots.setAttribute("aria-hidden", "true");
+  dots.append(
+    document.createElement("span"),
+    document.createElement("span"),
+    document.createElement("span"),
+  );
+  thinking.append(dots, document.createTextNode(" pensando…"));
+
+  const text = document.createElement("div");
+  text.className = "bubble-text";
+
+  bubble.append(meta, thinking, text);
+  ui.reviewAiMessages.querySelector(".review-ai-hint")?.remove();
+  ui.reviewAiMessages.append(bubble);
+  scrollReviewToBottom();
+  return bubble;
+}
+
+async function streamReviewFeedback(url, payload, label) {
+  if (state.reviewBusy) return;
+  state.reviewBusy = true;
+  updateReviewControls();
+  ui.reviewAiStatus.dataset.state = "thinking";
+  ui.reviewAiStatus.textContent = "pensando";
+
+  const bubble = createReviewBubble(`Revisor · ${label}`);
+  const textElement = bubble.querySelector(".bubble-text");
+  ui.reviewAiMessages.scrollIntoView({ block: "nearest", behavior: "smooth" });
+
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok) {
+      throw new Error(await readHttpError(response));
+    }
+    if (!response.body) {
+      throw new Error("Este navegador não oferece suporte a streaming.");
+    }
+
+    await consumeSSE(response.body, bubble, textElement, scrollReviewToBottom);
+    if (!textElement.textContent.trim()) {
+      textElement.textContent = "O revisor não retornou texto.";
+    }
+  } catch (error) {
+    appendBubbleError(bubble, error.message, scrollReviewToBottom);
+  } finally {
+    bubble.classList.remove("is-thinking");
+    state.reviewBusy = false;
+    ui.reviewAiStatus.dataset.state = "ready";
+    ui.reviewAiStatus.textContent = "pronto";
+    updateReviewControls();
+    scrollReviewToBottom();
+  }
 }
 
 init();

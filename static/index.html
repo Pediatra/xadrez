@@ -30,7 +30,15 @@
       </a>
     </header>
 
-    <main class="app-layout">
+    <div class="view-switcher" role="tablist" aria-label="Seções da aplicação">
+      <button id="view-trainer" class="view-tab" type="button" role="tab" aria-selected="true">Treino</button>
+      <button id="view-review" class="view-tab" type="button" role="tab" aria-selected="false">
+        Revisor
+        <span class="tab-badge" id="review-count" hidden>0</span>
+      </button>
+    </div>
+
+    <main class="app-layout" id="trainer-view">
       <section class="panel board-panel" aria-labelledby="game-heading">
         <h2 id="game-heading" class="sr-only">Partida</h2>
 
@@ -173,6 +181,71 @@
         </form>
       </aside>
     </main>
+
+    <section class="review-view" id="review-view" aria-labelledby="review-heading" hidden>
+      <header class="panel review-header">
+        <div>
+          <h2 id="review-heading">Revisor de evolução</h2>
+          <p class="muted small">
+            Cada lance jogado já foi analisado pelo Stockfish. Aqui o histórico local vira um diagnóstico do seu estilo.
+          </p>
+        </div>
+        <div class="review-actions">
+          <button id="review-refresh" type="button" class="secondary outline">Atualizar</button>
+          <button id="review-overall" type="button">Feedback geral</button>
+        </div>
+      </header>
+
+      <div class="review-stats" id="review-stats" aria-label="Estatísticas gerais"></div>
+
+      <div class="review-layout">
+        <aside class="panel review-games-panel" aria-labelledby="review-games-title">
+          <header class="review-panel-head">
+            <h3 id="review-games-title">Partidas</h3>
+            <span class="muted small" id="review-games-count">0</span>
+          </header>
+          <div class="review-games" id="review-games"></div>
+        </aside>
+
+        <section class="panel review-detail" aria-labelledby="review-detail-title">
+          <div class="review-empty" id="review-empty">
+            <p>Jogue algumas partidas no modo Treino. O histórico aparece aqui automaticamente.</p>
+          </div>
+
+          <div id="review-content" hidden>
+            <header class="review-game-head">
+              <div>
+                <h3 id="review-detail-title">Partida</h3>
+                <p id="review-game-subtitle" class="muted small"></p>
+              </div>
+              <button id="review-game-feedback" type="button" class="secondary outline">
+                Analisar esta partida
+              </button>
+            </header>
+
+            <div class="review-game-summary" id="review-game-summary"></div>
+            <div class="review-moves" id="review-moves" aria-label="Lances da partida"></div>
+
+            <details class="review-undone" id="review-undone-wrap" hidden>
+              <summary>Lances desfeitos nesta partida</summary>
+              <div id="review-undone"></div>
+            </details>
+
+            <section class="review-ai" aria-labelledby="review-ai-title">
+              <header class="review-panel-head">
+                <h3 id="review-ai-title">Revisor IA</h3>
+                <span class="chat-status" id="review-ai-status" data-state="ready">pronto</span>
+              </header>
+              <div class="review-ai-messages" id="review-ai-messages" role="log" aria-label="Feedback do revisor">
+                <p class="review-ai-hint">
+                  Peça um feedback geral ou uma análise completa da partida selecionada.
+                </p>
+              </div>
+            </section>
+          </div>
+        </section>
+      </div>
+    </section>
 
     <footer class="app-footer">
       <small>

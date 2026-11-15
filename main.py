@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import shutil
 import signal
@@ -13,14 +14,17 @@ from typing import Any, AsyncIterator, Literal
 import chess
 import chess.engine
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
+from storage import Storage
+
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 load_dotenv(BASE_DIR / ".env")
+logger = logging.getLogger("uvicorn.error")
 
 MATE_SCORE = 100_000
 MAX_CP_LOSS = 2_000
@@ -65,10 +69,37 @@ AGY_SANDBOX = os.getenv("AGY_SANDBOX", "1").strip().lower() not in {
     "off",
 }
 
+_database_path = Path(os.getenv("DATABASE_PATH", "xadrez.db")).expanduser()
+if not _database_path.is_absolute():
+    _database_path = BASE_DIR / _database_path
+storage = Storage(_database_path)
+
 TRAINER_RULES = (
     "Não use ferramentas, não leia arquivos e não execute comandos: "
     "responda somente com texto, em no máximo 2 parágrafos."
 )
+
+REVIEW_STUDENT_GUIDANCE: dict[str, tuple[str, ...]] = {
+    "beginner": (
+        "PERFIL DO ALUNO: INICIANTE.",
+        "Explique em linguagem simples, sem presumir que ele domina notação.",
+        "Sempre traduza códigos como Nf3, Bf4 ou exd5 para o nome da peça, a casa de origem, a casa de destino e a ideia.",
+        "A interface do revisor mostra a lista de lances com classificação e avaliação. Use essa lista como referência; não peça para abrir a lousa do treinador, que fica na outra aba.",
+        "Não abra o parecer com centipawns; comece pela ideia e use os números para sustentar o diagnóstico.",
+    ),
+    "intermediate": (
+        "PERFIL DO ALUNO: INTERMEDIÁRIO.",
+        "Pode usar notação com moderação, explicando a peça e a ideia de cada lance citado.",
+        "A interface do revisor mostra a lista de lances com classificação e avaliação; use essa lista como referência.",
+        "Não invente lances nem variantes.",
+    ),
+    "advanced": (
+        "PERFIL DO ALUNO: AVANÇADO.",
+        "Pode ser técnico e direto, citando notação, mas explique o raciocínio por trás dos números.",
+        "A interface do revisor mostra a lista de lances com classificação e avaliação; use-a como referência.",
+        "Não invente lances nem variantes.",
+    ),
+}
 
 STUDENT_GUIDANCE: dict[str, tuple[str, ...]] = {
     "beginner": (
@@ -115,6 +146,7 @@ class MoveAndAnalyzeRequest(BaseModel):
     fen: str = Field(..., min_length=10, max_length=120)
     move: str = Field(..., min_length=4, max_length=5)
     level: int = Field(3, ge=1, le=5)
+    game_id: int | None = Field(None, ge=1)
 
     @field_validator("fen")
     @classmethod
@@ -162,6 +194,57 @@ class ChatRequest(BaseModel):
         if not clean:
             raise ValueError("A mensagem não pode ficar vazia.")
         return clean
+
+
+def _validated_fen(value: str) -> str:
+    try:
+        board = chess.Board(value.strip())
+    except ValueError as exc:
+        raise ValueError("FEN inválido.") from exc
+    if not board.is_valid():
+        raise ValueError("FEN inválido ou posição ilegal.")
+    return board.fen()
+
+
+class CreateGameRequest(BaseModel):
+    level: int = Field(3, ge=1, le=5)
+    student_level: Literal["beginner", "intermediate", "advanced"] = "beginner"
+    start_fen: str = Field(chess.STARTING_FEN, min_length=10, max_length=120)
+
+    @field_validator("start_fen")
+    @classmethod
+    def validate_start_fen(cls, value: str) -> str:
+        return _validated_fen(value)
+
+
+class EndGameRequest(BaseModel):
+    reason: str = Field("finished", max_length=80)
+    result: str | None = Field(None, max_length=16)
+
+
+class UndoRequest(BaseModel):
+    plies: int = Field(2, ge=1, le=4)
+    fen: str = Field(..., min_length=10, max_length=120)
+    pgn: str | None = Field(None, max_length=20_000)
+    reason: str = Field("undo", max_length=80)
+
+    @field_validator("fen")
+    @classmethod
+    def validate_fen(cls, value: str) -> str:
+        return _validated_fen(value)
+
+
+class EventRequest(BaseModel):
+    type: str = Field(..., min_length=1, max_length=50)
+    payload: dict[str, Any] | None = None
+
+
+class ReviewFeedbackRequest(BaseModel):
+    student_level: Literal["beginner", "intermediate", "advanced"] = "beginner"
+
+
+class ReviewGameFeedbackRequest(ReviewFeedbackRequest):
+    pass
 
 
 class ChatLimiter:
@@ -590,6 +673,184 @@ def build_trainer_prompt(request: ChatRequest) -> str:
     return "\n".join(lines)
 
 
+REVIEW_RULES = (
+    "Não use ferramentas, não leia arquivos e não execute comandos: "
+    "responda somente com texto, em no máximo 4 parágrafos. "
+    "Não use markdown nem crases."
+)
+
+
+def _classification_line(counts: dict[str, int]) -> str:
+    order = ("Excelente", "Bom", "Imprecisão", "Erro", "Gafe")
+    return ", ".join(f"{label}: {counts.get(label, 0)}" for label in order)
+
+
+def _format_review_stats(stats: dict[str, Any]) -> list[str]:
+    lines = [
+        f"Partidas com lances: {stats.get('games', 0)}",
+        f"Lances do aluno analisados: {stats.get('analyzed_user_moves', 0)}",
+        f"Classificações: {_classification_line(stats.get('classifications') or {})}",
+        f"Perda média: {stats.get('avg_cp_loss')} centipawns",
+        f"Precisão estimada: {stats.get('accuracy')}%",
+        f"Taxa de lances ruins (imprecisão/erro/gafe): {stats.get('bad_rate')}%",
+    ]
+
+    phases = stats.get("phases") or {}
+    lines.append("Por fase:")
+    for phase in ("abertura", "meio-jogo", "final"):
+        item = phases.get(phase) or {}
+        lines.append(
+            f"- {phase}: {item.get('bad', 0)} ruins de {item.get('total', 0)} "
+            f"({item.get('bad_rate')}%)"
+        )
+
+    pieces = stats.get("pieces") or {}
+    if pieces:
+        lines.append("Por peça movida:")
+        for piece, item in sorted(
+            pieces.items(), key=lambda pair: (-pair[1].get("bad", 0), pair[0])
+        )[:8]:
+            lines.append(
+                f"- {piece}: {item.get('bad', 0)} ruins de {item.get('total', 0)} "
+                f"({item.get('bad_rate')}%)"
+            )
+
+    openings = stats.get("openings") or []
+    if openings:
+        lines.append("Sequências iniciais mais repetidas:")
+        for item in openings[:5]:
+            lines.append(f"- {item.get('line')}: {item.get('count')} vez(es)")
+
+    trend = stats.get("trend") or {}
+    lines.append(
+        "Tendência: "
+        f"precisão recente {trend.get('recent_accuracy')}%, "
+        f"precisão anterior {trend.get('previous_accuracy')}%; "
+        f"perda média recente {trend.get('recent_avg_cp_loss')} cp, "
+        f"perda anterior {trend.get('previous_avg_cp_loss')} cp."
+    )
+
+    recent_games = stats.get("recent_games") or []
+    if recent_games:
+        lines.append("Últimas partidas:")
+        for game in recent_games[:8]:
+            lines.append(
+                f"- #{game.get('id')} em {str(game.get('started_at', ''))[:10]}: "
+                f"resultado {game.get('result') or 'em andamento'}, "
+                f"nível {game.get('level')}, "
+                f"{game.get('analyzed_user_moves', 0)} lances analisados, "
+                f"perda média {game.get('avg_cp_loss')} cp, "
+                f"precisão {game.get('accuracy')}%, "
+                f"classificações ({_classification_line(game.get('classifications') or {})})."
+            )
+
+    return lines
+
+
+def build_review_prompt(stats: dict[str, Any], student_level: str) -> str:
+    lines = [
+        "Você é um revisor de xadrez que acompanha a evolução de um aluno ao longo de várias partidas.",
+        "Seu papel é apontar progresso real, padrões de erro, conceitos que o aluno está esquecendo e próximos passos práticos.",
+        "Use apenas os dados objetivos abaixo. Não invente lances, números, partidas ou padrões que não estejam nos dados.",
+        "Se os dados forem insuficientes, diga isso claramente e peça mais partidas em vez de inventar conclusões.",
+        "",
+        *REVIEW_STUDENT_GUIDANCE[student_level],
+        "",
+        "DADOS AGREGADOS DO HISTÓRICO",
+        *_format_review_stats(stats),
+        "",
+        "TAREFA DE REVISÃO",
+        "Escreva um parecer de progresso em português do Brasil, com no máximo 4 parágrafos.",
+        "Diga o que melhorou, o que piorou ou continua repetindo, em qual fase/peça/abertura o aluno mais perde pontos e o que ele parece estar esquecendo.",
+        "Termine com 2 ou 3 recomendações concretas para as próximas partidas. Não tente ensinar uma abertura inteira nem inventar variantes.",
+        "",
+        REVIEW_RULES,
+    ]
+    return "\n".join(lines)
+
+
+def _format_game_moves(game_data: dict[str, Any]) -> list[str]:
+    lines: list[str] = []
+    for move in game_data.get("moves", []):
+        actor = "aluno" if move.get("actor") == "user" else "Stockfish"
+        number = f"{move.get('move_number')}{'.' if move.get('color') == 'w' else '...'}"
+        details = [f"{number} {move.get('san')}", f"[{actor}]"]
+        if move.get("classification"):
+            details.append(f"classificação {move['classification']}")
+        if move.get("cp_loss") is not None and move.get("actor") == "user":
+            details.append(f"perda {move['cp_loss']} cp")
+        if move.get("eval_before") is not None or move.get("eval_after") is not None:
+            details.append(
+                f"avaliação {move.get('eval_before')} → {move.get('eval_after')}"
+            )
+        if move.get("actor") == "user" and move.get("best_move_san"):
+            details.append(f"melhor era {move['best_move_san']}")
+        lines.append(" | ".join(details))
+        refutation = move.get("refutation_pv") or []
+        if move.get("actor") == "user" and refutation:
+            lines.append(
+                "  continuação calculada depois desse lance "
+                "(o adversário responde primeiro): "
+                + " ".join(refutation[:6])
+            )
+
+    undone = game_data.get("undone_moves") or []
+    if undone:
+        lines.append("")
+        lines.append("Lances desfeitos pelo aluno (não valem para a partida atual):")
+        for move in undone[:30]:
+            lines.append(
+                f"- {move.get('san')} [{move.get('actor')}] "
+                f"{move.get('classification') or 'sem classificação'}"
+            )
+
+    events = game_data.get("events") or []
+    action_types = [
+        event.get("type")
+        for event in events
+        if event.get("type") in {"undo", "game_ended", "game_over", "game_started"}
+    ]
+    if action_types:
+        lines.append("")
+        lines.append("Ações registradas: " + ", ".join(action_types[:20]))
+    return lines
+
+
+def build_game_review_prompt(
+    game_data: dict[str, Any],
+    student_level: str,
+) -> str:
+    game = game_data.get("game") or {}
+    summary = game_data.get("summary") or {}
+    lines = [
+        "Você é um revisor de xadrez analisando uma partida inteira de um aluno.",
+        "Use exclusivamente os lances, classificações, avaliações e números abaixo. Não invente lances, variantes nem avaliações.",
+        "Considere tanto os lances ativos quanto a lista de lances desfeitos para entender o comportamento do aluno.",
+        "",
+        *REVIEW_STUDENT_GUIDANCE[student_level],
+        "",
+        "DADOS DA PARTIDA",
+        f"Partida #{game.get('id')} iniciada em {game.get('started_at')}",
+        f"Nível do bot: {game.get('level')}",
+        f"Resultado: {game.get('result') or 'em andamento'}",
+        f"Classificações do aluno: {_classification_line(summary.get('classifications') or {})}",
+        f"Perda média: {summary.get('avg_cp_loss')} centipawns",
+        f"Precisão estimada: {summary.get('accuracy')}%",
+        f"Lances ativos: {summary.get('plies', 0)}; lances desfeitos: {summary.get('undone_moves', 0)}",
+        "",
+        "LANCES DA PARTIDA",
+        *_format_game_moves(game_data),
+        "",
+        "TAREFA DE REVISÃO DA PARTIDA",
+        "Escreva uma análise da partida inteira em português do Brasil, com no máximo 4 parágrafos.",
+        "Explique os 3 a 5 momentos mais importantes em linguagem simples, diga o que o aluno não viu, relacione os erros com padrões (fase, peça, abertura) e termine com recomendações práticas.",
+        "Não recite a lista inteira de lances; use a lousa e os dados como apoio.",
+        "",
+        REVIEW_RULES,
+    ]
+    return "\n".join(lines)
+
+
 def _sse(payload: dict[str, Any]) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
@@ -944,26 +1205,18 @@ async def health() -> dict[str, Any]:
             "timeout_seconds": AGY_TIMEOUT_SECONDS,
             "max_concurrency": AGY_MAX_CONCURRENCY,
         },
+        "database": {
+            "path": str(storage.path),
+            "exists": storage.path.exists(),
+        },
         "warnings": warnings,
     }
 
 
-@app.post("/move-and-analyze")
-async def move_and_analyze(body: MoveAndAnalyzeRequest) -> dict[str, Any]:
-    try:
-        return await asyncio.to_thread(
-            _move_and_analyze_sync, body.fen, body.move, body.level
-        )
-    except MoveValidationError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except StockfishUnavailable as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except StockfishFailure as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-
-
-@app.post("/chat")
-async def chat(body: ChatRequest, request: Request) -> StreamingResponse:
+async def _streaming_agy_response(
+    prompt: str,
+    request: Request,
+) -> StreamingResponse:
     agy_path = resolve_agy_path()
     if not _is_executable(agy_path):
         raise HTTPException(
@@ -983,8 +1236,6 @@ async def chat(body: ChatRequest, request: Request) -> StreamingResponse:
             status_code=500,
             detail=f"AGY_MODEL inválido: {AGY_MODEL!r}.",
         )
-
-    prompt = build_trainer_prompt(body)
 
     if not chat_limiter.reserve():
         raise HTTPException(
@@ -1008,3 +1259,139 @@ async def chat(body: ChatRequest, request: Request) -> StreamingResponse:
         chat_limiter.unreserve()
         raise
     return response
+
+
+@app.post("/games")
+async def create_game(body: CreateGameRequest) -> dict[str, Any]:
+    return await asyncio.to_thread(
+        storage.create_game,
+        body.level,
+        body.student_level,
+        body.start_fen,
+    )
+
+
+@app.get("/games")
+async def list_games(
+    limit: int = Query(30, ge=1, le=100),
+    include_empty: bool = False,
+) -> dict[str, Any]:
+    games = await asyncio.to_thread(storage.list_games, limit, include_empty)
+    return {"games": games}
+
+
+@app.get("/games/{game_id}")
+async def get_game(game_id: int) -> dict[str, Any]:
+    game = await asyncio.to_thread(storage.get_game, game_id)
+    if game is None:
+        raise HTTPException(status_code=404, detail="Partida não encontrada.")
+    return game
+
+
+@app.post("/games/{game_id}/end")
+async def end_game(game_id: int, body: EndGameRequest) -> dict[str, Any]:
+    ended = await asyncio.to_thread(
+        storage.end_game,
+        game_id,
+        body.reason,
+        body.result,
+    )
+    if not ended:
+        raise HTTPException(status_code=404, detail="Partida não encontrada.")
+    return {"ok": True}
+
+
+@app.post("/games/{game_id}/undo")
+async def undo_game(game_id: int, body: UndoRequest) -> dict[str, Any]:
+    return await asyncio.to_thread(
+        storage.record_undo,
+        game_id,
+        body.plies,
+        body.fen,
+        body.pgn,
+        body.reason,
+    )
+
+
+@app.post("/games/{game_id}/event")
+async def game_event(game_id: int, body: EventRequest) -> dict[str, Any]:
+    try:
+        event_id = await asyncio.to_thread(
+            storage.record_event,
+            game_id,
+            body.type,
+            body.payload,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="Não foi possível registrar o evento para essa partida.",
+        ) from exc
+    return {"ok": True, "event_id": event_id}
+
+
+@app.get("/review/stats")
+async def review_stats(
+    recent_limit: int = Query(10, ge=1, le=30),
+) -> dict[str, Any]:
+    return await asyncio.to_thread(storage.overall_stats, recent_limit)
+
+
+@app.post("/review/feedback")
+async def review_feedback(
+    body: ReviewFeedbackRequest,
+    request: Request,
+) -> StreamingResponse:
+    stats = await asyncio.to_thread(storage.overall_stats, 10)
+    prompt = build_review_prompt(stats, body.student_level)
+    return await _streaming_agy_response(prompt, request)
+
+
+@app.post("/review/game/{game_id}/feedback")
+async def review_game_feedback(
+    game_id: int,
+    body: ReviewGameFeedbackRequest,
+    request: Request,
+) -> StreamingResponse:
+    game_data = await asyncio.to_thread(storage.get_game, game_id)
+    if game_data is None:
+        raise HTTPException(status_code=404, detail="Partida não encontrada.")
+    prompt = build_game_review_prompt(game_data, body.student_level)
+    return await _streaming_agy_response(prompt, request)
+
+
+@app.post("/move-and-analyze")
+async def move_and_analyze(body: MoveAndAnalyzeRequest) -> dict[str, Any]:
+    try:
+        result = await asyncio.to_thread(
+            _move_and_analyze_sync, body.fen, body.move, body.level
+        )
+    except MoveValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except StockfishUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except StockfishFailure as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    if body.game_id is not None:
+        try:
+            stored = await asyncio.to_thread(
+                storage.record_turn,
+                body.game_id,
+                result,
+                body.level,
+            )
+            result["stored"] = bool(stored)
+        except Exception:
+            logger.exception("Falha ao gravar a partida %s no SQLite", body.game_id)
+            result["stored"] = False
+    else:
+        result["stored"] = False
+
+    return result
+
+
+@app.post("/chat")
+async def chat(body: ChatRequest, request: Request) -> StreamingResponse:
+    prompt = build_trainer_prompt(body)
+    return await _streaming_agy_response(prompt, request)
