@@ -32,8 +32,12 @@ const PENDING_TURN_KEY = "xadrez-pending-turn-v1";
 const PENDING_TURN_MAX_AGE_MS = 2 * 60 * 1000;
 const CHAT_LOG_LIMIT = 80;
 const CHAT_LOG_CHARS = 120_000;
-const SQUARE_REFERENCE_PATTERN =
-  /\b(O-O-O|O-O|0-0-0|0-0)\b|\b([a-h][1-8])\s*(?:-|–|—|->|>|→|para|até)\s*([a-h][1-8])\b|\b([a-h][1-8])\b/gi;
+const SAN_MOVE_PATTERN =
+  "(?:[KQRBNDCT][a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?[+#]?|[a-h]x[a-h][1-8](?:=[QRBN])?[+#]?|[a-h][1-8]=[QRBN][+#]?)";
+const SQUARE_REFERENCE_PATTERN = new RegExp(
+  `\\b([Oo]-[Oo](?:-[Oo])?|0-0(?:-0)?)\\b|\\b([a-h][1-8])\\s*(?:-|–|—|->|>|→|x|X|×|para|até)\\s*([a-h][1-8])\\b|(?<![A-Za-z0-9])(${SAN_MOVE_PATTERN})(?![A-Za-z0-9])|\\b([a-h][1-8])\\b`,
+  "g",
+);
 const BRACKET_REFERENCE_PATTERN = /\[\[\s*([^\]\n]{1,40})\s*\]\]/g;
 
 const $ = (selector) => document.querySelector(selector);
@@ -2260,28 +2264,193 @@ function wireReferenceElement(element, reference) {
   });
 }
 
-function createSquareReference(from, to) {
+function uciSquares(uci) {
+  if (typeof uci !== "string" || uci.length < 4) return null;
+  return { from: uci.slice(0, 2), to: uci.slice(2, 4) };
+}
+
+function normalizeSan(san) {
+  return String(san).replace(/[+#?!]+$/g, "").trim();
+}
+
+function sanDestination(san) {
+  const matches = String(san)
+    .replace(/[+#?!]+$/g, "")
+    .match(/[a-h][1-8]/g);
+  return matches ? matches.at(-1) : null;
+}
+
+function addSanCandidate(index, san, from, to, priority) {
+  if (typeof san !== "string" || !from || !to) return;
+  const key = normalizeSan(san);
+  if (!key) return;
+
+  const candidates = index.get(key) ?? [];
+  const existing = candidates.find(
+    (candidate) => candidate.from === from && candidate.to === to,
+  );
+
+  if (existing) {
+    existing.priority = Math.min(existing.priority, priority);
+  } else {
+    candidates.push({ from, to, priority });
+  }
+  index.set(key, candidates);
+}
+
+function buildSanMoveIndex() {
+  const index = new Map();
+  const analysis = state.lastAnalysis;
+
+  if (analysis) {
+    const addUci = (san, uci, priority) => {
+      const squares = uciSquares(uci);
+      if (squares) {
+        addSanCandidate(index, san, squares.from, squares.to, priority);
+      }
+    };
+
+    addUci(analysis.user_move?.san, analysis.user_move?.uci, 0);
+    addUci(analysis.best_move?.san, analysis.best_move?.uci, 0);
+    addUci(analysis.bot_move?.san, analysis.bot_move?.uci, 0);
+
+    const pvSan = Array.isArray(analysis.pv_san) ? analysis.pv_san : [];
+    const pv = Array.isArray(analysis.pv) ? analysis.pv : [];
+    for (let indexSan = 0; indexSan < pvSan.length; indexSan += 1) {
+      addUci(pvSan[indexSan], pv[indexSan], 1);
+    }
+
+    const refutationSan = Array.isArray(analysis.refutation_pv_san)
+      ? analysis.refutation_pv_san
+      : [];
+    const refutation = Array.isArray(analysis.refutation_pv)
+      ? analysis.refutation_pv
+      : [];
+    for (let indexSan = 0; indexSan < refutationSan.length; indexSan += 1) {
+      addUci(refutationSan[indexSan], refutation[indexSan], 1);
+    }
+  }
+
+  for (const line of [coach.lines.best, coach.lines.played]) {
+    if (!line) continue;
+    for (const move of line.moves) {
+      addSanCandidate(index, move.san, move.from, move.to, 2);
+    }
+  }
+
+  for (const move of state.game.history({ verbose: true })) {
+    addSanCandidate(index, move.san, move.from, move.to, 3);
+  }
+
+  for (const move of state.game.moves({ verbose: true })) {
+    addSanCandidate(index, move.san, move.from, move.to, 4);
+  }
+
+  return index;
+}
+
+function resolveSan(san, index) {
+  const key = normalizeSan(san);
+  const destination = sanDestination(san);
+  const candidates = index.get(key) ?? [];
+
+  if (candidates.length === 0) {
+    return destination ? { from: null, to: destination } : null;
+  }
+
+  const uniqueMoves = new Map(
+    candidates.map((candidate) => [
+      `${candidate.from}${candidate.to}`,
+      candidate,
+    ]),
+  );
+
+  if (uniqueMoves.size === 1) return [...uniqueMoves.values()][0];
+
+  const destinations = new Set(candidates.map((candidate) => candidate.to));
+  if (destinations.size === 1) {
+    return { from: null, to: candidates[0].to };
+  }
+  return destination ? { from: null, to: destination } : null;
+}
+
+function createReferenceElement(
+  label,
+  reference,
+  { kind, move = false, ariaLabel, title } = {},
+) {
   const element = document.createElement("span");
-  element.className = to ? "square-ref move-ref" : "square-ref";
-  element.textContent = to ? `${from} → ${to}` : from;
+  element.className = move ? "square-ref move-ref" : "square-ref";
+  if (kind === "san") element.classList.add("san-ref");
+  if (kind === "castling") element.classList.add("castling-ref");
+  if (reference.invalid) element.classList.add("not-legal");
+  element.textContent = label;
+  element.dataset.refType = kind ?? (move ? "move" : "square");
+  if (reference.from) element.dataset.from = reference.from;
+  if (reference.to) element.dataset.to = reference.to;
   element.tabIndex = 0;
   element.setAttribute("role", "button");
   element.setAttribute("aria-pressed", "false");
-  element.setAttribute(
-    "aria-label",
-    to
-      ? `Destacar no tabuleiro o lance de ${from} para ${to}`
-      : `Destacar a casa ${from} no tabuleiro`,
-  );
-  element.title = to
-    ? `Ver ${from} → ${to} no tabuleiro`
-    : `Ver ${from} no tabuleiro`;
+  if (ariaLabel) element.setAttribute("aria-label", ariaLabel);
+  if (title) element.title = title;
 
-  wireReferenceElement(element, {
-    squares: to ? [from, to] : [from],
-    arrows: to ? [{ from, to }] : [],
-  });
+  wireReferenceElement(element, reference);
   return element;
+}
+
+function createSquareReference(from, to) {
+  if (to) {
+    return createReferenceElement(
+      `${from} → ${to}`,
+      { from, to, squares: [from, to], arrows: [{ from, to }] },
+      {
+        kind: "coord",
+        move: true,
+        ariaLabel: `Destacar no tabuleiro o lance de ${from} para ${to}`,
+        title: `Ver ${from} → ${to} no tabuleiro`,
+      },
+    );
+  }
+
+  return createReferenceElement(
+    from,
+    { to: from, squares: [from], arrows: [] },
+    {
+      kind: "square",
+      ariaLabel: `Destacar a casa ${from} no tabuleiro`,
+      title: `Ver ${from} no tabuleiro`,
+    },
+  );
+}
+
+function createSanReference(san, move) {
+  if (move.from && move.to) {
+    return createReferenceElement(
+      san,
+      {
+        from: move.from,
+        to: move.to,
+        squares: [move.from, move.to],
+        arrows: [{ from: move.from, to: move.to }],
+      },
+      {
+        kind: "san",
+        move: true,
+        ariaLabel: `Destacar no tabuleiro o lance ${san} (${move.from} → ${move.to})`,
+        title: `Ver ${san} (${move.from} → ${move.to}) no tabuleiro`,
+      },
+    );
+  }
+
+  return createReferenceElement(
+    san,
+    { to: move.to, squares: [move.to], arrows: [] },
+    {
+      kind: "san-square",
+      ariaLabel: `Destacar a casa ${move.to}, destino do lance ${san}`,
+      title: `Ver ${move.to} no tabuleiro (${san})`,
+    },
+  );
 }
 
 function createCastlingReference(long) {
@@ -2297,35 +2466,31 @@ function createCastlingReference(long) {
   const kind = long ? "grande" : "pequeno";
   const label = long ? "O-O-O" : "O-O";
 
-  const element = document.createElement("span");
-  element.className = "square-ref castling-ref";
-  if (!legal) element.classList.add("not-legal");
-  element.textContent = label;
-  element.tabIndex = 0;
-  element.setAttribute("role", "button");
-  element.setAttribute("aria-pressed", "false");
-  element.setAttribute(
-    "aria-label",
-    legal
-      ? `Destacar no tabuleiro o roque ${kind} das ${side}`
-      : `Mostrar o roque ${kind} das ${side}; ele não é legal na posição atual`,
+  return createReferenceElement(
+    label,
+    {
+      squares: [kingFrom, kingTo, rookFrom, rookTo],
+      arrows: [
+        { from: kingFrom, to: kingTo },
+        { from: rookFrom, to: rookTo },
+      ],
+      invalid: !legal,
+      from: kingFrom,
+      to: kingTo,
+    },
+    {
+      kind: "castling",
+      ariaLabel: legal
+        ? `Destacar no tabuleiro o roque ${kind} das ${side}`
+        : `Mostrar o roque ${kind} das ${side}; ele não é legal na posição atual`,
+      title: legal
+        ? `Ver roque ${kind} das ${side} no tabuleiro`
+        : `Roque ${kind} das ${side}: não é legal na posição atual`,
+    },
   );
-  element.title = legal
-    ? `Ver roque ${kind} das ${side} no tabuleiro`
-    : `Roque ${kind} das ${side}: não é legal na posição atual`;
-
-  wireReferenceElement(element, {
-    squares: [kingFrom, kingTo, rookFrom, rookTo],
-    arrows: [
-      { from: kingFrom, to: kingTo },
-      { from: rookFrom, to: rookTo },
-    ],
-    invalid: !legal,
-  });
-  return element;
 }
 
-function appendReferenceText(fragment, text) {
+function appendReferenceText(fragment, text, sanIndex) {
   if (!text) return false;
 
   let found = false;
@@ -2341,8 +2506,15 @@ function appendReferenceText(fragment, text) {
     if (match[1]) {
       const notation = match[1].replaceAll("0", "O").toUpperCase();
       fragment.append(createCastlingReference(notation === "O-O-O"));
+    } else if (match[4]) {
+      const resolved = resolveSan(match[4], sanIndex);
+      if (resolved) {
+        fragment.append(createSanReference(match[4], resolved));
+      } else {
+        fragment.append(match[4]);
+      }
     } else {
-      const from = (match[2] ?? match[4]).toLowerCase();
+      const from = (match[2] ?? match[5]).toLowerCase();
       const to = match[3]?.toLowerCase() ?? null;
       fragment.append(createSquareReference(from, to));
     }
@@ -2360,7 +2532,7 @@ function appendReferenceText(fragment, text) {
   return true;
 }
 
-function buildReferenceFragment(text) {
+function buildReferenceFragment(text, sanIndex) {
   const fragment = document.createDocumentFragment();
   let found = false;
   let cursor = 0;
@@ -2368,14 +2540,14 @@ function buildReferenceFragment(text) {
   let match;
 
   while ((match = BRACKET_REFERENCE_PATTERN.exec(text)) !== null) {
-    if (appendReferenceText(fragment, text.slice(cursor, match.index))) {
+    if (appendReferenceText(fragment, text.slice(cursor, match.index), sanIndex)) {
       found = true;
     }
 
     const content = match[1].trim();
     const castling = content.match(/^(O-O-O|O-O|0-0-0|0-0)$/i);
     const exact = content.match(
-      /^([a-h][1-8])\s*(?:(?:-|–|—|->|>|→|para|até)\s*([a-h][1-8]))?$/i,
+      /^([a-h][1-8])\s*(?:(?:-|–|—|->|>|→|x|X|×|para|até)\s*([a-h][1-8]))?$/i,
     );
 
     if (castling) {
@@ -2391,7 +2563,7 @@ function buildReferenceFragment(text) {
       );
       found = true;
     } else if (content) {
-      if (appendReferenceText(fragment, content)) {
+      if (appendReferenceText(fragment, content, sanIndex)) {
         found = true;
       }
     }
@@ -2399,15 +2571,72 @@ function buildReferenceFragment(text) {
     cursor = match.index + match[0].length;
   }
 
-  if (appendReferenceText(fragment, text.slice(cursor))) found = true;
+  if (appendReferenceText(fragment, text.slice(cursor), sanIndex)) found = true;
   return found ? fragment : null;
+}
+
+function dedupeReferenceElements(element) {
+  let lastMoveKey = null;
+  let lastMoveTo = null;
+  let gap = "";
+
+  for (const node of [...element.childNodes]) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      gap += node.textContent ?? "";
+      continue;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) continue;
+
+    const from = node.dataset?.from;
+    const to = node.dataset?.to;
+    const refType = node.dataset?.refType;
+    const isMoveRef = node.classList.contains("move-ref") && from && to;
+    const isCoordinateMove = isMoveRef && refType === "coord";
+    const isPlainSquare = refType === "square" && to && !from;
+
+    if (isCoordinateMove) {
+      const key = `${from}${to}`;
+      const duplicate =
+        key === lastMoveKey && gap.length <= 60 && !/[.!?\n]/.test(gap);
+
+      if (duplicate) {
+        node.replaceWith(document.createTextNode(node.textContent ?? ""));
+        gap += node.textContent ?? "";
+        continue;
+      }
+    }
+
+    if (
+      isPlainSquare &&
+      to === lastMoveTo &&
+      gap.length <= 60 &&
+      !/[.!?\n]/.test(gap)
+    ) {
+      node.replaceWith(document.createTextNode(node.textContent ?? ""));
+      gap += node.textContent ?? "";
+      continue;
+    }
+
+    if (isMoveRef) {
+      lastMoveKey = `${from}${to}`;
+      lastMoveTo = to;
+      gap = "";
+    } else if (refType === "san-square" && to) {
+      lastMoveTo = to;
+      gap = "";
+    } else {
+      gap += node.textContent ?? "";
+    }
+  }
 }
 
 function decorateChatSquares(element) {
   if (!element || element.dataset.squaresDecorated === "1") return;
-  const fragment = buildReferenceFragment(element.textContent);
+  const sanIndex = buildSanMoveIndex();
+  const fragment = buildReferenceFragment(element.textContent, sanIndex);
   if (!fragment) return;
   element.replaceChildren(fragment);
+  dedupeReferenceElements(element);
   element.dataset.squaresDecorated = "1";
 }
 

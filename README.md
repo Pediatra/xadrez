@@ -194,11 +194,15 @@ o caminho do `agy`, se ele existe e qual `AGY_MODEL` está em uso.
 - Quando o treinador cita uma casa ou um lance, ela vira uma referência clicável
   no texto. Passar o mouse (ou focar pelo teclado) destaca a casa no tabuleiro;
   se for um lance, a interface desenha a seta de origem para destino. Clicar
-  fixa o destaque e clicar de novo o remove. O treinador marca lances com
-  `[[e2>e4]]`, casas com `[[c4]]` e roques com `[[O-O]]` ou `[[O-O-O]]`; a
-  interface também reconhece coordenadas soltas, como `c4`, e expressões como
-  `e2 para e4`. Se o roque não for legal na posição atual, a referência fica em
-  vermelho e o treinador explica o bloqueio.
+  fixa o destaque e clicar de novo o remove.
+- A marcação é **automática**: a interface reconhece casas (`c4`), lances em
+  coordenadas (`d1 para c2`, `d1 → c2`), notação SAN (`Qc2`, `Nf3`, `Bxg2`,
+  `Rac8`, `exd5`) e roques (`O-O`, `O-O-O`). A sintaxe `[[...]]` é opcional e
+  serve só para desambiguar. Quando a origem de um SAN é inequívoca no contexto
+  da partida, a seta é desenhada; se houver ambiguidade, só o destino é
+  destacado. Menções em coordenadas repetidas em sequência são reduzidas para
+  não duplicar a seta. Se o roque não for legal na posição atual, a referência
+  fica em vermelho e o treinador explica o bloqueio.
 - Para fazer roque na interface, arraste o **rei duas casas** na direção da
   torre; a torre se move junto. Arrastar a torre não faz o roque.
 - Ao selecionar o rei, se houver roque disponível, aparece um aviso logo abaixo

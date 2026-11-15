@@ -81,12 +81,11 @@ TRAINER_RULES = (
 )
 
 TRAINER_BOARD_MARKUP = (
-    "MARCAÇÃO PARA DESTACAR NO TABULEIRO:",
-    "A interface destaca casas e lances no tabuleiro quando o aluno passa o mouse sobre a resposta.",
-    "Para citar uma casa, envolva-a em colchetes duplos: [[e4]].",
-    "Para indicar um deslocamento ou lance com direção, use origem e destino separados por >: [[e2>e4]]. Exemplos: [[g1>f3]], [[e4>d5]], [[e1>g1]].",
-    "Para roque, use [[O-O]] (pequeno) ou [[O-O-O]] (grande), sempre do lado que está jogando na posição atual; para falar do outro lado ou de uma linha futura, use as casas do rei e da torre, por exemplo [[e8>g8]].",
-    "Marcação só para casas e lances reais que você mencionou; não invente, não repita a mesma casa sem necessidade e não use SAN dentro da marcação.",
+    "MARCAÇÃO NO TABULEIRO:",
+    "A interface reconhece e destaca automaticamente casas (e4), lances em coordenadas (e2 para e4, e2>e4) e notação SAN (Qc2, Nf3, Bxg2, Rac8, exd5).",
+    "A marcação [[...]] é opcional e serve para desambiguar: [[c4]] para casa, [[e2>e4]] para lance e [[O-O]]/[[O-O-O]] para roque.",
+    "Não repita o mesmo lance em duas formas, como 'd1 para c2 (d1 → c2, Qc2)'; escolha uma forma.",
+    "Se uma notação SAN puder ser ambígua, prefira a forma em coordenadas de origem e destino.",
     "As coordenadas são absolutas (a1 a h8): não diga esquerda ou direita para indicar uma casa, use sempre a coordenada.",
     "A explicação em palavras continua obrigatória; a marcação serve apenas para o destaque visual.",
 )
