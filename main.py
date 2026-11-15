@@ -76,7 +76,18 @@ storage = Storage(_database_path)
 
 TRAINER_RULES = (
     "Não use ferramentas, não leia arquivos e não execute comandos: "
-    "responda somente com texto, em no máximo 2 parágrafos."
+    "responda somente com texto, em no máximo 2 parágrafos. "
+    "Não use listas nem markdown (nada de asteriscos, crases ou cerquilhas)."
+)
+
+TRAINER_BOARD_MARKUP = (
+    "MARCAÇÃO PARA DESTACAR NO TABULEIRO:",
+    "A interface destaca casas e lances no tabuleiro quando o aluno passa o mouse sobre a resposta.",
+    "Para citar uma casa, envolva-a em colchetes duplos: [[e4]].",
+    "Para indicar um deslocamento ou lance com direção, use origem e destino separados por >: [[e2>e4]]. Exemplos: [[g1>f3]], [[e4>d5]], [[e1>g1]].",
+    "Marcação só para casas e lances reais que você mencionou; não invente, não repita a mesma casa sem necessidade e não use SAN dentro da marcação.",
+    "As coordenadas são absolutas (a1 a h8): não diga esquerda ou direita para indicar uma casa, use sempre a coordenada.",
+    "A explicação em palavras continua obrigatória; a marcação serve apenas para o destaque visual.",
 )
 
 REVIEW_STUDENT_GUIDANCE: dict[str, tuple[str, ...]] = {
@@ -626,6 +637,8 @@ def build_trainer_prompt(request: ChatRequest) -> str:
         "Responda em no máximo 2 parágrafos, sem listas longas e sem markdown complicado.",
         "",
         *STUDENT_GUIDANCE[request.student_level],
+        "",
+        *TRAINER_BOARD_MARKUP,
         "",
         "DADOS DA PARTIDA",
         f"FEN atual: {_display_fen(request.fen)}",

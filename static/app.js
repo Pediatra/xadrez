@@ -27,6 +27,14 @@ const PIECE_NAMES = {
 };
 const FEMININE_PIECES = new Set(["q", "r"]);
 const COACH_MAX_PLIES = 8;
+const SESSION_KEY = "xadrez-session-v1";
+const PENDING_TURN_KEY = "xadrez-pending-turn-v1";
+const PENDING_TURN_MAX_AGE_MS = 2 * 60 * 1000;
+const CHAT_LOG_LIMIT = 80;
+const CHAT_LOG_CHARS = 120_000;
+const SQUARE_REFERENCE_PATTERN =
+  /\b([a-h][1-8])\s*(?:-|–|—|->|>|→|para|até)\s*([a-h][1-8])\b|\b([a-h][1-8])\b/gi;
+const BRACKET_REFERENCE_PATTERN = /\[\[\s*([^\]\n]{1,40})\s*\]\]/g;
 
 const $ = (selector) => document.querySelector(selector);
 
@@ -99,6 +107,7 @@ const state = {
   level: 3,
   boardLocked: false,
   analyzing: false,
+  turnPending: false,
   agyAvailable: null,
   chatBusy: false,
   chatQueue: [],
@@ -114,6 +123,12 @@ const state = {
   reviewLoading: false,
   reviewGameId: null,
   reviewStats: null,
+  baseShapes: [],
+  referenceHover: null,
+  referencePin: null,
+  chatLog: [],
+  restoredSession: false,
+  restoreCoach: false,
 };
 
 const coach = {
@@ -178,6 +193,7 @@ async function endGameRecord(gameId, reason, result = null) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ reason, result }),
+      keepalive: true,
     });
   } catch (error) {
     console.warn("Não foi possível encerrar a partida no histórico:", error);
@@ -196,6 +212,7 @@ async function recordUndo(gameId, plies) {
         pgn: state.game.pgn(),
         reason: "undo",
       }),
+      keepalive: true,
     });
   } catch (error) {
     console.warn("Não foi possível registrar o desfazer:", error);
@@ -209,6 +226,7 @@ async function recordGameEvent(type, payload = {}) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ type, payload }),
+      keepalive: true,
     });
   } catch (error) {
     console.warn("Não foi possível registrar o evento:", error);
@@ -260,16 +278,290 @@ function saveTrainerLevel(level) {
   }
 }
 
+function readSession() {
+  try {
+    const raw = window.localStorage.getItem(SESSION_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    return data && typeof data === "object" ? data : null;
+  } catch {
+    return null;
+  }
+}
+
+function restoreSession() {
+  const data = readSession();
+  if (!data) return false;
+
+  const candidate = new Chess();
+  try {
+    if (typeof data.pgn === "string" && data.pgn.trim()) {
+      candidate.loadPgn(data.pgn);
+    }
+  } catch {
+    return false;
+  }
+
+  state.game = candidate;
+  state.restoredSession = true;
+  state.gameId =
+    Number.isInteger(data.gameId) && data.gameId > 0 ? data.gameId : null;
+  state.orientation = data.orientation === "black" ? "black" : "white";
+  state.level =
+    Number.isInteger(data.level) && data.level >= 1 && data.level <= 5
+      ? data.level
+      : 3;
+  if (TRAINER_LEVELS.has(data.trainerLevel)) {
+    state.trainerLevel = data.trainerLevel;
+  }
+  state.boardLocked =
+    state.game.isGameOver() || state.game.turn() === "b";
+  state.lastAnalysis =
+    data.lastAnalysis && typeof data.lastAnalysis === "object"
+      ? data.lastAnalysis
+      : null;
+  state.restoreCoach =
+    Boolean(data.coachVisible) && state.lastAnalysis !== null;
+
+  const evaluation =
+    data.eval && typeof data.eval === "object" ? data.eval : NEUTRAL_EVAL;
+  state.evalByFen.set(fenKey(state.game.fen()), evaluation);
+
+  if (Array.isArray(data.chatLog)) {
+    state.chatLog = data.chatLog
+      .filter(
+        (entry) =>
+          entry &&
+          typeof entry.text === "string" &&
+          entry.text.trim() &&
+          ["user", "trainer", "note"].includes(entry.role),
+      )
+      .slice(-CHAT_LOG_LIMIT)
+      .map((entry) => ({
+        role: entry.role,
+        text: entry.text.slice(0, 20_000),
+        error: entry.role === "trainer" && Boolean(entry.error),
+      }));
+  }
+
+  return true;
+}
+
+function saveSession() {
+  if (!state.game || state.analyzing || state.turnPending) return;
+
+  const evaluation =
+    state.evalByFen.get(fenKey(state.game.fen())) ?? NEUTRAL_EVAL;
+  const payload = {
+    version: 1,
+    savedAt: new Date().toISOString(),
+    gameId: state.gameId,
+    pgn: state.game.pgn(),
+    fen: state.game.fen(),
+    orientation: state.orientation,
+    level: state.level,
+    trainerLevel: state.trainerLevel,
+    eval: evaluation,
+    lastAnalysis: state.lastAnalysis,
+    coachVisible: !ui.coachPanel.hidden,
+    chatLog: state.chatLog,
+  };
+
+  try {
+    window.localStorage.setItem(SESSION_KEY, JSON.stringify(payload));
+  } catch {
+    // Sem localStorage, o F5 perde o estado; o jogo continua funcionando.
+  }
+}
+
+function pushChatLog(entry) {
+  state.chatLog.push(entry);
+
+  let total = state.chatLog.reduce((sum, item) => sum + item.text.length, 0);
+  while (
+    state.chatLog.length > CHAT_LOG_LIMIT ||
+    (total > CHAT_LOG_CHARS && state.chatLog.length > 1)
+  ) {
+    const removed = state.chatLog.shift();
+    total -= removed?.text.length ?? 0;
+  }
+
+  saveSession();
+}
+
+async function ensureGameAfterRestore() {
+  if (!state.gameId) {
+    try {
+      await ensureGameRecord();
+      saveSession();
+    } catch (error) {
+      console.warn("Não foi possível iniciar o histórico SQLite:", error);
+      appendChatNote(
+        "⚠️ O histórico SQLite não iniciou. O jogo funciona, mas esta partida não será salva.",
+      );
+    }
+    return;
+  }
+
+  try {
+    const response = await fetch(`/games/${state.gameId}`);
+    if (response.status !== 404) return;
+
+    state.gameId = null;
+    appendChatNote(
+      "⚠️ A partida anterior não está mais no histórico local. Os próximos lances serão salvos em uma nova partida.",
+    );
+    await ensureGameRecord();
+    saveSession();
+  } catch (error) {
+    console.warn("Não foi possível validar a partida restaurada:", error);
+  }
+}
+
+function localMoveUcis() {
+  return state.game
+    .history({ verbose: true })
+    .map((move) => `${move.from}${move.to}${move.promotion ?? ""}`);
+}
+
+function writePendingTurn() {
+  if (!state.turnPending || !state.gameId) return;
+  try {
+    window.localStorage.setItem(
+      PENDING_TURN_KEY,
+      JSON.stringify({ gameId: state.gameId, savedAt: Date.now() }),
+    );
+  } catch {
+    // Sem localStorage, a recuperação do lance em voo não é possível.
+  }
+}
+
+function readPendingTurn() {
+  try {
+    const raw = window.localStorage.getItem(PENDING_TURN_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    if (!Number.isInteger(data.gameId) || data.gameId <= 0) {
+      window.localStorage.removeItem(PENDING_TURN_KEY);
+      return null;
+    }
+    if (
+      !Number.isFinite(data.savedAt) ||
+      Date.now() - data.savedAt > PENDING_TURN_MAX_AGE_MS
+    ) {
+      window.localStorage.removeItem(PENDING_TURN_KEY);
+      return null;
+    }
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+function clearPendingTurn() {
+  try {
+    window.localStorage.removeItem(PENDING_TURN_KEY);
+  } catch {
+    // Sem localStorage, não há marcador para limpar.
+  }
+}
+
+function adoptServerGame(data) {
+  const startFen = data?.game?.start_fen || START_FEN;
+  const serverMoves = Array.isArray(data?.moves) ? data.moves : [];
+  const localUcis = localMoveUcis();
+  const serverUcis = serverMoves.map((move) => move.uci);
+
+  if (
+    serverUcis.length <= localUcis.length ||
+    !localUcis.every((uci, index) => serverUcis[index] === uci)
+  ) {
+    return false;
+  }
+
+  let game;
+  try {
+    game = new Chess(startFen);
+    for (const move of serverMoves) {
+      game.move(move.san);
+    }
+  } catch {
+    return false;
+  }
+
+  state.game = game;
+  state.gameId = Number(data.game?.id) || state.gameId;
+  state.boardLocked = Boolean(data.game?.game_over) || game.isGameOver();
+  state.lastAnalysis = null;
+  state.turnPending = false;
+  state.evalByFen = new Map([[fenKey(startFen), NEUTRAL_EVAL]]);
+  state.evalByFen.set(fenKey(game.fen()), NEUTRAL_EVAL);
+
+  setAnalyzing(false);
+  clearArrows();
+  clearReference();
+  hideQualityBadge();
+  hideCoachBoard();
+  renderBoard(lastMoveFromHistory());
+  renderMoves();
+  updateEval(NEUTRAL_EVAL);
+  return true;
+}
+
+async function recoverPendingTurn(pending) {
+  setAnalyzing(true);
+  ui.boardOverlayText.textContent = "Recuperando o último lance…";
+
+  try {
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      const response = await fetch(`/games/${pending.gameId}`);
+      if (response.status === 404) {
+        state.gameId = null;
+        clearPendingTurn();
+        setAnalyzing(false);
+        await ensureGameAfterRestore();
+        return;
+      }
+      if (!response.ok) break;
+
+      const data = await response.json();
+      if (adoptServerGame(data)) {
+        clearPendingTurn();
+        return;
+      }
+
+      await delay(500);
+    }
+
+    clearPendingTurn();
+    appendChatNote(
+      "Não encontrei um lance novo no servidor; a partida continuou do último estado salvo.",
+    );
+  } catch (error) {
+    console.warn("Não foi possível recuperar o lance em andamento:", error);
+    clearPendingTurn();
+  } finally {
+    setAnalyzing(false);
+    ui.boardOverlayText.textContent = "Analisando seu lance…";
+    saveSession();
+  }
+}
+
 function init() {
   state.evalByFen.set(fenKey(START_FEN), NEUTRAL_EVAL);
   state.trainerLevel = loadTrainerLevel();
+  restoreSession();
   ui.trainerLevel.value = state.trainerLevel;
+  ui.botLevel.value = String(state.level);
+  if (state.orientation === "black") {
+    ui.evalBar.classList.add("flipped");
+  }
   renderBoardCoords();
 
   ground = Chessground(ui.board, {
     fen: state.game.fen(),
     orientation: state.orientation,
-    turnColor: "white",
+    turnColor: state.game.turn() === "w" ? "white" : "black",
     coordinates: false,
     animation: { enabled: true, duration: 230 },
     highlight: { lastMove: true, check: true },
@@ -283,22 +575,59 @@ function init() {
     draggable: { enabled: true, showGhost: true },
     selectable: { enabled: true },
     premovable: { enabled: false },
-    drawable: { enabled: true, visible: true },
+    drawable: {
+      enabled: true,
+      visible: true,
+      brushes: {
+        reference: {
+          key: "reference",
+          color: "#fbbf24",
+          opacity: 0.45,
+          lineWidth: 6,
+        },
+        referenceArrow: {
+          key: "referenceArrow",
+          color: "#fbbf24",
+          opacity: 0.88,
+          lineWidth: 10,
+        },
+      },
+    },
   });
 
   bindEvents();
-  renderBoard();
+  renderBoard(lastMoveFromHistory());
   renderMoves();
-  updateEval(NEUTRAL_EVAL);
+  updateEvalForCurrentFen();
+  restoreChatLog();
+
+  const history = state.game.history({ verbose: true });
+  const qualityUci = state.lastAnalysis?.user_move?.uci;
+  if (
+    qualityUci &&
+    history.some(
+      (move) => `${move.from}${move.to}${move.promotion ?? ""}` === qualityUci,
+    )
+  ) {
+    showQuality(state.lastAnalysis);
+  }
+
+  if (state.restoreCoach) {
+    state.restoreCoach = false;
+    showCoachBoard(state.lastAnalysis);
+  }
+
   updateChatControls();
   updateReviewControls();
   void checkHealth();
-  void ensureGameRecord().catch((error) => {
-    console.warn("Não foi possível iniciar o histórico SQLite:", error);
-    appendChatNote(
-      "⚠️ O histórico SQLite não iniciou. O jogo funciona, mas esta partida não será salva.",
-    );
-  });
+
+  const pending = readPendingTurn();
+  if (state.restoredSession && pending && pending.gameId === state.gameId) {
+    void recoverPendingTurn(pending);
+  } else {
+    if (pending) clearPendingTurn();
+    void ensureGameAfterRestore();
+  }
 }
 
 function bindEvents() {
@@ -308,12 +637,14 @@ function bindEvents() {
   ui.botLevel.addEventListener("change", () => {
     state.level = Number.parseInt(ui.botLevel.value, 10) || 3;
     void recordGameEvent("level_change", { level: state.level });
+    saveSession();
   });
 
   ui.trainerLevel.addEventListener("change", () => {
     const level = ui.trainerLevel.value;
     state.trainerLevel = TRAINER_LEVELS.has(level) ? level : "beginner";
     saveTrainerLevel(state.trainerLevel);
+    saveSession();
   });
 
   ui.coachClose.addEventListener("click", hideCoachBoard);
@@ -368,6 +699,8 @@ function bindEvents() {
   });
 
   window.addEventListener("pagehide", () => {
+    writePendingTurn();
+    saveSession();
     state.moveController?.abort();
     stopCoachPlayback();
   });
@@ -556,6 +889,81 @@ function hideQualityBadge() {
   ui.qualityBadge.removeAttribute("title");
 }
 
+function applyBoardShapes() {
+  if (!ground) return;
+
+  const reference = state.referenceHover ?? state.referencePin;
+  const shapes = [...state.baseShapes];
+
+  if (reference) {
+    for (const square of reference.squares) {
+      shapes.push({ orig: square, brush: "reference" });
+    }
+    if (reference.from && reference.to) {
+      shapes.push({
+        orig: reference.from,
+        dest: reference.to,
+        brush: "referenceArrow",
+      });
+    }
+  }
+
+  ground.setShapes(shapes);
+  ui.boardShell.classList.toggle("ref-highlight", Boolean(reference));
+}
+
+function setReferenceHover(source, from, to) {
+  state.referenceHover = {
+    source,
+    from,
+    to,
+    squares: to ? [from, to] : [from],
+  };
+  applyBoardShapes();
+}
+
+function clearReferenceHover(source) {
+  if (state.referenceHover?.source !== source) return;
+  state.referenceHover = null;
+  applyBoardShapes();
+}
+
+function setReferencePin(source, from, to) {
+  state.referencePin?.source.classList.remove("pinned");
+  state.referencePin?.source.setAttribute("aria-pressed", "false");
+
+  state.referencePin = {
+    source,
+    from,
+    to,
+    squares: to ? [from, to] : [from],
+  };
+  source.classList.add("pinned");
+  source.setAttribute("aria-pressed", "true");
+  applyBoardShapes();
+}
+
+function toggleReferencePin(source, from, to) {
+  if (state.referencePin?.source === source) {
+    state.referencePin.source.classList.remove("pinned");
+    state.referencePin.source.setAttribute("aria-pressed", "false");
+    state.referencePin = null;
+  } else {
+    setReferencePin(source, from, to);
+  }
+  applyBoardShapes();
+}
+
+function clearReference() {
+  state.referenceHover = null;
+  if (state.referencePin) {
+    state.referencePin.source.classList.remove("pinned");
+    state.referencePin.source.setAttribute("aria-pressed", "false");
+    state.referencePin = null;
+  }
+  applyBoardShapes();
+}
+
 function drawArrows(playedUci, bestUci) {
   const shapes = [];
   if (typeof playedUci === "string" && playedUci.length >= 4) {
@@ -572,7 +980,8 @@ function drawArrows(playedUci, bestUci) {
       brush: "green",
     });
   }
-  if (shapes.length > 0) ground.setShapes(shapes);
+  state.baseShapes = shapes;
+  applyBoardShapes();
 }
 
 function clearArrows() {
@@ -580,7 +989,8 @@ function clearArrows() {
     window.clearTimeout(state.arrowsTimer);
     state.arrowsTimer = null;
   }
-  ground?.setShapes([]);
+  state.baseShapes = [];
+  applyBoardShapes();
 }
 
 function showEngineWarning(message) {
@@ -646,11 +1056,13 @@ async function handleBoardMove(orig, dest) {
 
 async function analyzeUserMove({ fenBefore, fenAfterUser, uci, lastMove }) {
   state.boardLocked = true;
+  state.turnPending = true;
   setAnalyzing(true);
   renderBoard(lastMove);
   renderMoves();
   hideQualityBadge();
   clearArrows();
+  clearReference();
   hideCoachBoard();
 
   const controller = new AbortController();
@@ -694,6 +1106,9 @@ async function analyzeUserMove({ fenBefore, fenAfterUser, uci, lastMove }) {
     if (controller.signal.aborted) {
       renderBoard(lastMoveFromHistory());
     }
+    state.turnPending = false;
+    clearPendingTurn();
+    saveSession();
   }
 }
 
@@ -1114,6 +1529,7 @@ function rollbackMove(fenAfterUser, message) {
   setAnalyzing(false);
   hideQualityBadge();
   clearArrows();
+  clearReference();
   renderBoard(lastMoveFromHistory());
   renderMoves();
   updateEvalForCurrentFen();
@@ -1130,24 +1546,30 @@ function startNewGame() {
   state.game = new Chess();
   state.boardLocked = false;
   state.analyzing = false;
+  state.turnPending = false;
   state.lastAnalysis = null;
   state.evalByFen = new Map([[fenKey(START_FEN), NEUTRAL_EVAL]]);
+  clearPendingTurn();
   setAnalyzing(false);
   clearArrows();
+  clearReference();
   hideQualityBadge();
   hideCoachBoard();
   renderBoard();
   renderMoves();
   updateEval(NEUTRAL_EVAL);
+  saveSession();
   if (previousGameId) {
     void endGameRecord(previousGameId, "new_game");
   }
-  void ensureGameRecord().catch((error) => {
-    console.warn("Não foi possível iniciar o histórico do novo jogo:", error);
-    appendChatNote(
-      "⚠️ O novo jogo não pôde ser salvo no histórico SQLite.",
-    );
-  });
+  void ensureGameRecord()
+    .then(() => saveSession())
+    .catch((error) => {
+      console.warn("Não foi possível iniciar o histórico do novo jogo:", error);
+      appendChatNote(
+        "⚠️ O novo jogo não pôde ser salvo no histórico SQLite.",
+      );
+    });
   appendChatNote("Novo jogo iniciado.");
 }
 
@@ -1155,12 +1577,14 @@ function flipBoard() {
   state.orientation = state.orientation === "white" ? "black" : "white";
   ground.set({ orientation: state.orientation });
   renderBoardCoords();
+  clearReference();
   if (coach.ground) {
     coach.ground.set({ orientation: state.orientation });
     renderCoach();
   }
   ui.evalBar.classList.toggle("flipped", state.orientation === "black");
   void recordGameEvent("flip_board", { orientation: state.orientation });
+  saveSession();
 }
 
 function undoMove() {
@@ -1169,8 +1593,11 @@ function undoMove() {
   state.moveController?.abort();
   state.moveController = null;
   state.boardLocked = false;
+  state.turnPending = false;
+  clearPendingTurn();
   setAnalyzing(false);
   clearArrows();
+  clearReference();
   hideQualityBadge();
   hideCoachBoard();
 
@@ -1188,6 +1615,7 @@ function undoMove() {
   renderBoard(lastMoveFromHistory());
   renderMoves();
   updateEvalForCurrentFen();
+  saveSession();
   appendChatNote("Lance desfeito.");
 }
 
@@ -1349,6 +1777,17 @@ async function streamTrainerReply(payload) {
   } finally {
     bubble.classList.remove("is-thinking");
     state.chatBusy = false;
+
+    const finalText = textElement.textContent.trim();
+    if (finalText) {
+      decorateChatSquares(textElement);
+      pushChatLog({
+        role: "trainer",
+        text: finalText,
+        error: bubble.classList.contains("error"),
+      });
+    }
+
     updateChatControls();
     scrollChatToBottom();
 
@@ -1476,14 +1915,45 @@ function createChatBubble(role, { thinking = false } = {}) {
 function appendUserMessage(message) {
   const bubble = createChatBubble("user");
   bubble.querySelector(".bubble-text").textContent = message;
+  pushChatLog({ role: "user", text: message });
 }
 
-function appendChatNote(message) {
+function renderChatNote(message) {
   const note = document.createElement("div");
   note.className = "chat-note";
   note.textContent = message;
   ui.chatMessages.append(note);
   scrollChatToBottom();
+}
+
+function appendChatNote(message) {
+  renderChatNote(message);
+  pushChatLog({ role: "note", text: message });
+}
+
+function restoreChatLog() {
+  for (const entry of state.chatLog) {
+    if (entry.role === "note") {
+      renderChatNote(entry.text);
+      continue;
+    }
+
+    const bubble = createChatBubble(entry.role);
+    const text = bubble.querySelector(".bubble-text");
+    text.textContent = entry.text;
+
+    if (entry.role === "trainer") {
+      if (entry.error) bubble.classList.add("error");
+      decorateChatSquares(text);
+    }
+  }
+
+  scrollChatToBottom();
+  ui.chatMessages.style.scrollBehavior = "auto";
+  ui.chatMessages.scrollTop = ui.chatMessages.scrollHeight;
+  window.requestAnimationFrame(() => {
+    ui.chatMessages.style.scrollBehavior = "";
+  });
 }
 
 function appendBubbleError(bubble, message, onUpdate = scrollChatToBottom) {
@@ -1493,6 +1963,122 @@ function appendBubbleError(bubble, message, onUpdate = scrollChatToBottom) {
   bubble.classList.add("error");
   bubble.classList.remove("is-thinking");
   onUpdate();
+}
+
+function createSquareReference(from, to) {
+  const element = document.createElement("span");
+  element.className = to ? "square-ref move-ref" : "square-ref";
+  element.textContent = to ? `${from} → ${to}` : from;
+  element.tabIndex = 0;
+  element.setAttribute("role", "button");
+  element.setAttribute("aria-pressed", "false");
+  element.setAttribute(
+    "aria-label",
+    to
+      ? `Destacar no tabuleiro o lance de ${from} para ${to}`
+      : `Destacar a casa ${from} no tabuleiro`,
+  );
+  element.title = to
+    ? `Ver ${from} → ${to} no tabuleiro`
+    : `Ver ${from} no tabuleiro`;
+
+  element.addEventListener("mouseenter", () => {
+    setReferenceHover(element, from, to);
+  });
+  element.addEventListener("focus", () => {
+    setReferenceHover(element, from, to);
+  });
+  element.addEventListener("mouseleave", () => {
+    clearReferenceHover(element);
+  });
+  element.addEventListener("blur", () => {
+    clearReferenceHover(element);
+  });
+  element.addEventListener("click", (event) => {
+    event.preventDefault();
+    toggleReferencePin(element, from, to);
+  });
+  element.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    toggleReferencePin(element, from, to);
+  });
+
+  return element;
+}
+
+function appendReferenceText(fragment, text) {
+  if (!text) return false;
+
+  let found = false;
+  let cursor = 0;
+  SQUARE_REFERENCE_PATTERN.lastIndex = 0;
+  let match;
+
+  while ((match = SQUARE_REFERENCE_PATTERN.exec(text)) !== null) {
+    if (match.index > cursor) {
+      fragment.append(text.slice(cursor, match.index));
+    }
+    const from = (match[1] ?? match[3]).toLowerCase();
+    const to = match[2]?.toLowerCase() ?? null;
+    fragment.append(createSquareReference(from, to));
+    cursor = match.index + match[0].length;
+    found = true;
+  }
+
+  if (!found) {
+    fragment.append(text);
+    return false;
+  }
+
+  if (cursor < text.length) fragment.append(text.slice(cursor));
+  return true;
+}
+
+function buildReferenceFragment(text) {
+  const fragment = document.createDocumentFragment();
+  let found = false;
+  let cursor = 0;
+  BRACKET_REFERENCE_PATTERN.lastIndex = 0;
+  let match;
+
+  while ((match = BRACKET_REFERENCE_PATTERN.exec(text)) !== null) {
+    if (appendReferenceText(fragment, text.slice(cursor, match.index))) {
+      found = true;
+    }
+
+    const content = match[1].trim();
+    const exact = content.match(
+      /^([a-h][1-8])\s*(?:(?:-|–|—|->|>|→|para|até)\s*([a-h][1-8]))?$/i,
+    );
+
+    if (exact) {
+      fragment.append(
+        createSquareReference(
+          exact[1].toLowerCase(),
+          exact[2]?.toLowerCase() ?? null,
+        ),
+      );
+      found = true;
+    } else if (content) {
+      if (appendReferenceText(fragment, content)) {
+        found = true;
+      }
+    }
+
+    cursor = match.index + match[0].length;
+  }
+
+  if (appendReferenceText(fragment, text.slice(cursor))) found = true;
+  return found ? fragment : null;
+}
+
+function decorateChatSquares(element) {
+  if (!element || element.dataset.squaresDecorated === "1") return;
+  const fragment = buildReferenceFragment(element.textContent);
+  if (!fragment) return;
+  element.replaceChildren(fragment);
+  element.dataset.squaresDecorated = "1";
 }
 
 function scrollChatToBottom() {

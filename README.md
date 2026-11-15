@@ -191,6 +191,17 @@ o caminho do `agy`, se ele existe e qual `AGY_MODEL` está em uso.
   notação solta e explica a peça, as casas e a ideia por trás do lance.
 - Você pode perguntar qualquer coisa no chat a qualquer momento. O frontend
   anexa silenciosamente o FEN e o PGN atuais a cada mensagem.
+- Quando o treinador cita uma casa ou um lance, ela vira uma referência clicável
+  no texto. Passar o mouse (ou focar pelo teclado) destaca a casa no tabuleiro;
+  se for um lance, a interface desenha a seta de origem para destino. Clicar
+  fixa o destaque e clicar de novo o remove. O treinador marca lances com
+  `[[e2>e4]]` e casas com `[[c4]]`; a interface também reconhece coordenadas
+  soltas, como `c4`, e expressões como `e2 para e4`.
+- A partida atual sobrevive a um **F5**: posição, lista de lances, avaliação,
+  orientação, nível do bot, nível da explicação, lousa aberta e conversa do chat
+  são restaurados do `localStorage` do navegador. Se você atualizar no meio da
+  análise de um lance, a página tenta recuperar o lance e a resposta do bot
+  direto do SQLite antes de liberar o tabuleiro.
 - A aba **Revisor** mostra o histórico salvo em SQLite: partidas, todos os
   lances com classificação e avaliação, lances desfeitos, estatísticas de
   precisão/perda média, fases e peças mais frágeis, aberturas repetidas e
@@ -284,8 +295,9 @@ O processo é encerrado no `finally` em caso de timeout ou desconexão do client
   `agy não encontrado neste host` e não funcionam.
 - **O histórico é local e não é sincronizado.** Fica no SQLite configurado em
   `DATABASE_PATH`; para levar o histórico a outra máquina, copie o arquivo do
-  banco. O conteúdo das conversas do chat não é gravado, apenas partidas,
-  lances e ações de jogo.
+  banco. As conversas do chat não entram no SQLite: a sessão atual e o texto do
+  chat ficam no `localStorage` do navegador para sobreviver ao F5. Limpar os
+  dados do site apaga essa cópia local e a retomada da partida.
 - **A primeira resposta do treinador leva alguns segundos** porque o CLI inicia
   um processo por chamada. Não há daemon persistente; cada mensagem paga o custo
   de inicialização do `agy`. O limite padrão é de 120 segundos.
@@ -403,6 +415,8 @@ systemctl --user start xadrez.service
 Para começar um histórico limpo, pare o serviço, mova `xadrez.db` e os arquivos
 `xadrez.db-wal`/`xadrez.db-shm` para outro lugar e inicie de novo.
 
-O conteúdo das conversas do treinador não é gravado. Ao pedir um parecer, o
-backend envia ao `agy` as estatísticas agregadas e, no caso de uma partida, a
-lista de lances/classificações; o banco em si permanece local.
+O conteúdo das conversas do treinador não entra no SQLite; ele fica apenas no
+`localStorage` do navegador, junto com a sessão atual, para permitir a retomada
+após F5. Ao pedir um parecer, o backend envia ao `agy` as estatísticas agregadas
+e, no caso de uma partida, a lista de lances/classificações; o banco em si
+permanece local.
