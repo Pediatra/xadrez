@@ -173,6 +173,10 @@ o caminho do `agy`, se ele existe e qual `AGY_MODEL` está em uso.
 
 - Você joga com as brancas contra o Stockfish. O seletor **Nível do Bot** vai
   de 1 (Iniciante) a 5 (Forte).
+- **Cor do tabuleiro** troca o par de casas do tabuleiro principal e da lousa
+  entre nove opções: Areia, Madeira, Verde, Azul, Cinza, Ardósia, Vinho, Ameixa
+  e Coral. A escolha fica salva no `localStorage` e vale para as próximas
+  partidas.
 - **Novo Jogo**, **Inverter Tabuleiro** e **Desfazer Lance** controlam a partida.
 - A barra vertical mostra a avaliação da posição; o painel esquerdo lista os
   lances jogados.
@@ -214,10 +218,10 @@ o caminho do `agy`, se ele existe e qual `AGY_MODEL` está em uso.
   do status, por exemplo `Roque disponível (O-O: clique em g1)`. Isso mostra
   qual lado está legal na posição atual.
 - A partida atual sobrevive a um **F5**: posição, lista de lances, avaliação,
-  orientação, nível do bot, nível da explicação, lousa aberta e conversa do chat
-  são restaurados do `localStorage` do navegador. Se você atualizar no meio da
-  análise de um lance, a página tenta recuperar o lance e a resposta do bot
-  direto do SQLite antes de liberar o tabuleiro.
+  orientação, nível do bot, nível da explicação, cor do tabuleiro, lousa aberta
+  e conversa do chat são restaurados do `localStorage` do navegador. Se você
+  atualizar no meio da análise de um lance, a página tenta recuperar o lance e
+  a resposta do bot direto do SQLite antes de liberar o tabuleiro.
 - A partida atual também fica registrada no SQLite. Se você abrir a aplicação em
   outro navegador ou limpar os dados do site, ela é retomada do servidor, com
   tabuleiro, lances, avaliação e nível do bot.
@@ -342,7 +346,8 @@ O processo é encerrado no `finally` em caso de timeout ou desconexão do client
 └── static/
     ├── index.html     # layout semântico
     ├── style.css      # Pico CSS + ajustes
-    └── app.js         # chess.js, Chessground, fetch/SSE
+    ├── app.js         # chess.js, Chessground, fetch/SSE
+    └── favicon.svg    # ícone de cavalo na aba do navegador
 
 xadrez.db               # criado em runtime; fica fora do Git
 ```

@@ -29,6 +29,18 @@ const FEMININE_PIECES = new Set(["q", "r"]);
 const COACH_MAX_PLIES = 8;
 const SESSION_KEY = "xadrez-session-v1";
 const PENDING_TURN_KEY = "xadrez-pending-turn-v1";
+const BOARD_THEME_KEY = "xadrez-board-theme";
+const BOARD_THEMES = Object.freeze({
+  areia: { light: "#f0d9b5", dark: "#b58863" },
+  madeira: { light: "#e4c9a3", dark: "#9a6b47" },
+  verde: { light: "#e9edd4", dark: "#7d945d" },
+  azul: { light: "#dfe7ec", dark: "#7f95a3" },
+  cinza: { light: "#e4e4e4", dark: "#8a8a8a" },
+  ardosia: { light: "#dfe3e8", dark: "#647487" },
+  vinho: { light: "#efdcd6", dark: "#9c5a5a" },
+  ameixa: { light: "#e7dced", dark: "#7d6390" },
+  coral: { light: "#f6e0d2", dark: "#c07a5e" },
+});
 const PENDING_TURN_MAX_AGE_MS = 2 * 60 * 1000;
 const CHAT_LOG_LIMIT = 80;
 const CHAT_LOG_CHARS = 120_000;
@@ -63,6 +75,7 @@ const ui = {
   undoMove: $("#undo-move"),
   resignGame: $("#resign-game"),
   botLevel: $("#bot-level"),
+  boardTheme: $("#board-theme"),
   engineWarning: $("#engine-warning"),
   moveList: $("#move-list"),
   moveCount: $("#move-count"),
@@ -126,6 +139,7 @@ const state = {
   evalByFen: new Map(),
   lastAnalysis: null,
   trainerLevel: "beginner",
+  boardTheme: "areia",
   gameId: null,
   gamePromise: null,
   gameEpoch: 0,
@@ -286,6 +300,35 @@ function saveTrainerLevel(level) {
     window.localStorage.setItem("xadrez-trainer-level", level);
   } catch {
     // Sem localStorage, a escolha vale só para esta sessão.
+  }
+}
+
+function loadBoardTheme() {
+  try {
+    const saved = window.localStorage.getItem(BOARD_THEME_KEY);
+    if (saved && BOARD_THEMES[saved]) return saved;
+  } catch {
+    // localStorage pode estar bloqueado; usa o padrão areia.
+  }
+  return "areia";
+}
+
+function applyBoardTheme(name) {
+  const key = BOARD_THEMES[name] ? name : "areia";
+  const theme = BOARD_THEMES[key];
+  state.boardTheme = key;
+
+  const root = document.documentElement;
+  root.style.setProperty("--board-light", theme.light);
+  root.style.setProperty("--board-dark", theme.dark);
+  if (ui.boardTheme) ui.boardTheme.value = key;
+}
+
+function saveBoardTheme(name) {
+  try {
+    window.localStorage.setItem(BOARD_THEME_KEY, name);
+  } catch {
+    // Sem localStorage, a cor vale só para esta sessão.
   }
 }
 
@@ -715,6 +758,8 @@ async function recoverPendingTurn(pending) {
 function init() {
   state.evalByFen.set(fenKey(START_FEN), NEUTRAL_EVAL);
   state.trainerLevel = loadTrainerLevel();
+  state.boardTheme = loadBoardTheme();
+  applyBoardTheme(state.boardTheme);
   restoreSession();
   ui.trainerLevel.value = state.trainerLevel;
   ui.botLevel.value = String(state.level);
@@ -818,6 +863,11 @@ function bindEvents() {
     state.level = Number.parseInt(ui.botLevel.value, 10) || 3;
     void recordGameEvent("level_change", { level: state.level });
     saveSession();
+  });
+
+  ui.boardTheme.addEventListener("change", () => {
+    applyBoardTheme(ui.boardTheme.value);
+    saveBoardTheme(state.boardTheme);
   });
 
   ui.trainerLevel.addEventListener("change", () => {

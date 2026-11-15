@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="Treino de xadrez local com Stockfish e treinador Gemini via agy.">
   <title>Treino de Xadrez · Stockfish + Gemini</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <meta name="theme-color" content="#14100d">
 
   <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
@@ -92,6 +94,23 @@
           <button id="flip-board" type="button" class="secondary outline">Inverter Tabuleiro</button>
           <button id="undo-move" type="button" class="secondary outline" disabled>Desfazer Lance</button>
           <button id="resign-game" type="button" class="secondary outline resign-button">Desistir</button>
+          <label class="level-field board-theme-field" for="board-theme">
+            Cor do tabuleiro
+            <span class="select-row">
+              <span class="board-theme-preview" id="board-theme-preview" aria-hidden="true"></span>
+              <select id="board-theme" name="board-theme">
+                <option value="areia" selected>Areia</option>
+                <option value="madeira">Madeira</option>
+                <option value="verde">Verde</option>
+                <option value="azul">Azul</option>
+                <option value="cinza">Cinza</option>
+                <option value="ardosia">Ardósia</option>
+                <option value="vinho">Vinho</option>
+                <option value="ameixa">Ameixa</option>
+                <option value="coral">Coral</option>
+              </select>
+            </span>
+          </label>
           <label class="level-field" for="bot-level">
             Nível do Bot
             <select id="bot-level" name="bot-level">
