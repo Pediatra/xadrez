@@ -1304,8 +1304,26 @@ textarea {
   box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.35);
 }
 
+.square-ref.not-legal {
+  border-bottom-style: dashed;
+  border-bottom-color: rgba(248, 113, 113, 0.72);
+  color: #fca5a5;
+}
+
+.square-ref.not-legal:hover,
+.square-ref.not-legal:focus-visible,
+.square-ref.not-legal.pinned {
+  background: rgba(248, 113, 113, 0.14);
+  border-bottom-color: rgba(248, 113, 113, 0.95);
+  color: #fecaca;
+}
+
 .board-shell.ref-highlight .cg-shapes {
   filter: drop-shadow(0 0 6px rgba(251, 191, 36, 0.75));
+}
+
+.board-shell.ref-highlight.ref-invalid .cg-shapes {
+  filter: drop-shadow(0 0 6px rgba(248, 113, 113, 0.78));
 }
 
 .chat-note {

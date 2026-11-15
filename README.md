@@ -195,8 +195,12 @@ o caminho do `agy`, se ele existe e qual `AGY_MODEL` está em uso.
   no texto. Passar o mouse (ou focar pelo teclado) destaca a casa no tabuleiro;
   se for um lance, a interface desenha a seta de origem para destino. Clicar
   fixa o destaque e clicar de novo o remove. O treinador marca lances com
-  `[[e2>e4]]` e casas com `[[c4]]`; a interface também reconhece coordenadas
-  soltas, como `c4`, e expressões como `e2 para e4`.
+  `[[e2>e4]]`, casas com `[[c4]]` e roques com `[[O-O]]` ou `[[O-O-O]]`; a
+  interface também reconhece coordenadas soltas, como `c4`, e expressões como
+  `e2 para e4`. Se o roque não for legal na posição atual, a referência fica em
+  vermelho e o treinador explica o bloqueio.
+- Para fazer roque na interface, arraste o **rei duas casas** na direção da
+  torre; a torre se move junto. Arrastar a torre não faz o roque.
 - A partida atual sobrevive a um **F5**: posição, lista de lances, avaliação,
   orientação, nível do bot, nível da explicação, lousa aberta e conversa do chat
   são restaurados do `localStorage` do navegador. Se você atualizar no meio da

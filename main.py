@@ -85,9 +85,18 @@ TRAINER_BOARD_MARKUP = (
     "A interface destaca casas e lances no tabuleiro quando o aluno passa o mouse sobre a resposta.",
     "Para citar uma casa, envolva-a em colchetes duplos: [[e4]].",
     "Para indicar um deslocamento ou lance com direção, use origem e destino separados por >: [[e2>e4]]. Exemplos: [[g1>f3]], [[e4>d5]], [[e1>g1]].",
+    "Para roque, use [[O-O]] (pequeno) ou [[O-O-O]] (grande), sempre do lado que está jogando na posição atual; para falar do outro lado ou de uma linha futura, use as casas do rei e da torre, por exemplo [[e8>g8]].",
     "Marcação só para casas e lances reais que você mencionou; não invente, não repita a mesma casa sem necessidade e não use SAN dentro da marcação.",
     "As coordenadas são absolutas (a1 a h8): não diga esquerda ou direita para indicar uma casa, use sempre a coordenada.",
     "A explicação em palavras continua obrigatória; a marcação serve apenas para o destaque visual.",
+)
+
+TRAINER_CASTLING_GUIDANCE = (
+    "ROQUE E LEGALIDADE:",
+    "Use o resumo de roque da posição atual. Nunca mande o aluno tentar O-O ou O-O-O se o resumo disser que não é legal agora.",
+    "Se o roque não for legal, explique em palavras o que falta: peça bloqueando a casa entre rei e torre, rei em xeque, casa atacada ou direito de roque já perdido.",
+    "Para executar o roque na interface, o aluno arrasta o rei duas casas na direção da torre; a torre se move junto. Não é preciso mover a torre primeiro.",
+    "Se o roque aparecer apenas numa linha futura da lousa, deixe claro que antes é preciso mover as peças bloqueadoras.",
 )
 
 REVIEW_STUDENT_GUIDANCE: dict[str, tuple[str, ...]] = {
@@ -636,6 +645,49 @@ def _display_pgn(pgn: str | None) -> str:
     return clean
 
 
+def _castling_summary(fen: str | None) -> str:
+    if not fen:
+        return "não informado"
+    try:
+        board = chess.Board(fen)
+    except ValueError:
+        return "FEN inválido"
+    if not board.is_valid():
+        return "posição inválida"
+
+    white = board.turn == chess.WHITE
+    king_home = chess.E1 if white else chess.E8
+    kingside_target = chess.G1 if white else chess.G8
+    queenside_target = chess.C1 if white else chess.C8
+
+    legal_moves = list(board.legal_moves)
+    kingside = any(
+        move.from_square == king_home and move.to_square == kingside_target
+        for move in legal_moves
+    )
+    queenside = any(
+        move.from_square == king_home and move.to_square == queenside_target
+        for move in legal_moves
+    )
+
+    rights: list[str] = []
+    for color, label in ((chess.WHITE, "brancas"), (chess.BLACK, "pretas")):
+        sides: list[str] = []
+        if board.has_kingside_castling_rights(color):
+            sides.append("pequeno")
+        if board.has_queenside_castling_rights(color):
+            sides.append("grande")
+        rights.append(f"{label}: {', '.join(sides) if sides else 'nenhum'}")
+
+    side = "brancas" if white else "pretas"
+    return (
+        f"lado a jogar: {side}; "
+        f"roque legal agora: pequeno {'sim' if kingside else 'não'}, "
+        f"grande {'sim' if queenside else 'não'}; "
+        f"direitos restantes: {'; '.join(rights)}"
+    )
+
+
 def build_trainer_prompt(request: ChatRequest) -> str:
     lines = [
         "Você é um treinador de xadrez direto, didático e conciso, falando em português do Brasil.",
@@ -648,8 +700,11 @@ def build_trainer_prompt(request: ChatRequest) -> str:
         "",
         *TRAINER_BOARD_MARKUP,
         "",
+        *TRAINER_CASTLING_GUIDANCE,
+        "",
         "DADOS DA PARTIDA",
         f"FEN atual: {_display_fen(request.fen)}",
+        f"Roque na posição atual: {_castling_summary(request.fen)}",
         "Histórico PGN:",
         _display_pgn(request.pgn),
     ]
@@ -659,6 +714,9 @@ def build_trainer_prompt(request: ChatRequest) -> str:
         lines.extend(["", "ANÁLISE DO STOCKFISH PARA O LANCE DO ALUNO"])
         if analysis.fen_before:
             lines.append(f"FEN antes do lance: {_display_fen(analysis.fen_before)}")
+            lines.append(
+                f"Roque antes do lance: {_castling_summary(analysis.fen_before)}"
+            )
         if analysis.played:
             uci = f" ({analysis.played_uci})" if analysis.played_uci else ""
             lines.append(f"Lance jogado pelo aluno: {analysis.played}{uci}")

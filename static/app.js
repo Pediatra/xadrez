@@ -33,7 +33,7 @@ const PENDING_TURN_MAX_AGE_MS = 2 * 60 * 1000;
 const CHAT_LOG_LIMIT = 80;
 const CHAT_LOG_CHARS = 120_000;
 const SQUARE_REFERENCE_PATTERN =
-  /\b([a-h][1-8])\s*(?:-|–|—|->|>|→|para|até)\s*([a-h][1-8])\b|\b([a-h][1-8])\b/gi;
+  /\b(O-O-O|O-O|0-0-0|0-0)\b|\b([a-h][1-8])\s*(?:-|–|—|->|>|→|para|até)\s*([a-h][1-8])\b|\b([a-h][1-8])\b/gi;
 const BRACKET_REFERENCE_PATTERN = /\[\[\s*([^\]\n]{1,40})\s*\]\]/g;
 
 const $ = (selector) => document.querySelector(selector);
@@ -747,6 +747,18 @@ function init() {
           opacity: 0.88,
           lineWidth: 10,
         },
+        referenceInvalid: {
+          key: "referenceInvalid",
+          color: "#f87171",
+          opacity: 0.35,
+          lineWidth: 6,
+        },
+        referenceInvalidArrow: {
+          key: "referenceInvalidArrow",
+          color: "#f87171",
+          opacity: 0.82,
+          lineWidth: 10,
+        },
       },
     },
   });
@@ -1056,31 +1068,31 @@ function applyBoardShapes() {
 
   const reference = state.referenceHover ?? state.referencePin;
   const shapes = [...state.baseShapes];
+  const squareBrush = reference?.invalid ? "referenceInvalid" : "reference";
+  const arrowBrush = reference?.invalid
+    ? "referenceInvalidArrow"
+    : "referenceArrow";
 
   if (reference) {
-    for (const square of reference.squares) {
-      shapes.push({ orig: square, brush: "reference" });
+    for (const square of reference.squares ?? []) {
+      shapes.push({ orig: square, brush: squareBrush });
     }
-    if (reference.from && reference.to) {
+    for (const arrow of reference.arrows ?? []) {
       shapes.push({
-        orig: reference.from,
-        dest: reference.to,
-        brush: "referenceArrow",
+        orig: arrow.from,
+        dest: arrow.to,
+        brush: arrowBrush,
       });
     }
   }
 
   ground.setShapes(shapes);
   ui.boardShell.classList.toggle("ref-highlight", Boolean(reference));
+  ui.boardShell.classList.toggle("ref-invalid", Boolean(reference?.invalid));
 }
 
-function setReferenceHover(source, from, to) {
-  state.referenceHover = {
-    source,
-    from,
-    to,
-    squares: to ? [from, to] : [from],
-  };
+function setReferenceHover(source, reference) {
+  state.referenceHover = { source, ...reference };
   applyBoardShapes();
 }
 
@@ -1090,28 +1102,23 @@ function clearReferenceHover(source) {
   applyBoardShapes();
 }
 
-function setReferencePin(source, from, to) {
+function setReferencePin(source, reference) {
   state.referencePin?.source.classList.remove("pinned");
   state.referencePin?.source.setAttribute("aria-pressed", "false");
 
-  state.referencePin = {
-    source,
-    from,
-    to,
-    squares: to ? [from, to] : [from],
-  };
+  state.referencePin = { source, ...reference };
   source.classList.add("pinned");
   source.setAttribute("aria-pressed", "true");
   applyBoardShapes();
 }
 
-function toggleReferencePin(source, from, to) {
+function toggleReferencePin(source, reference) {
   if (state.referencePin?.source === source) {
     state.referencePin.source.classList.remove("pinned");
     state.referencePin.source.setAttribute("aria-pressed", "false");
     state.referencePin = null;
   } else {
-    setReferencePin(source, from, to);
+    setReferencePin(source, reference);
   }
   applyBoardShapes();
 }
@@ -2195,6 +2202,30 @@ function appendBubbleError(bubble, message, onUpdate = scrollChatToBottom) {
   onUpdate();
 }
 
+function wireReferenceElement(element, reference) {
+  element.addEventListener("mouseenter", () => {
+    setReferenceHover(element, reference);
+  });
+  element.addEventListener("focus", () => {
+    setReferenceHover(element, reference);
+  });
+  element.addEventListener("mouseleave", () => {
+    clearReferenceHover(element);
+  });
+  element.addEventListener("blur", () => {
+    clearReferenceHover(element);
+  });
+  element.addEventListener("click", (event) => {
+    event.preventDefault();
+    toggleReferencePin(element, reference);
+  });
+  element.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    toggleReferencePin(element, reference);
+  });
+}
+
 function createSquareReference(from, to) {
   const element = document.createElement("span");
   element.className = to ? "square-ref move-ref" : "square-ref";
@@ -2212,28 +2243,51 @@ function createSquareReference(from, to) {
     ? `Ver ${from} → ${to} no tabuleiro`
     : `Ver ${from} no tabuleiro`;
 
-  element.addEventListener("mouseenter", () => {
-    setReferenceHover(element, from, to);
+  wireReferenceElement(element, {
+    squares: to ? [from, to] : [from],
+    arrows: to ? [{ from, to }] : [],
   });
-  element.addEventListener("focus", () => {
-    setReferenceHover(element, from, to);
-  });
-  element.addEventListener("mouseleave", () => {
-    clearReferenceHover(element);
-  });
-  element.addEventListener("blur", () => {
-    clearReferenceHover(element);
-  });
-  element.addEventListener("click", (event) => {
-    event.preventDefault();
-    toggleReferencePin(element, from, to);
-  });
-  element.addEventListener("keydown", (event) => {
-    if (event.key !== "Enter" && event.key !== " ") return;
-    event.preventDefault();
-    toggleReferencePin(element, from, to);
-  });
+  return element;
+}
 
+function createCastlingReference(long) {
+  const white = state.game.turn() === "w";
+  const kingFrom = white ? "e1" : "e8";
+  const kingTo = white ? (long ? "c1" : "g1") : long ? "c8" : "g8";
+  const rookFrom = white ? (long ? "a1" : "h1") : long ? "a8" : "h8";
+  const rookTo = white ? (long ? "d1" : "f1") : long ? "d8" : "f8";
+  const legal = state.game
+    .moves({ square: kingFrom, verbose: true })
+    .some((move) => move.to === kingTo);
+  const side = white ? "brancas" : "pretas";
+  const kind = long ? "grande" : "pequeno";
+  const label = long ? "O-O-O" : "O-O";
+
+  const element = document.createElement("span");
+  element.className = "square-ref castling-ref";
+  if (!legal) element.classList.add("not-legal");
+  element.textContent = label;
+  element.tabIndex = 0;
+  element.setAttribute("role", "button");
+  element.setAttribute("aria-pressed", "false");
+  element.setAttribute(
+    "aria-label",
+    legal
+      ? `Destacar no tabuleiro o roque ${kind} das ${side}`
+      : `Mostrar o roque ${kind} das ${side}; ele não é legal na posição atual`,
+  );
+  element.title = legal
+    ? `Ver roque ${kind} das ${side} no tabuleiro`
+    : `Roque ${kind} das ${side}: não é legal na posição atual`;
+
+  wireReferenceElement(element, {
+    squares: [kingFrom, kingTo, rookFrom, rookTo],
+    arrows: [
+      { from: kingFrom, to: kingTo },
+      { from: rookFrom, to: rookTo },
+    ],
+    invalid: !legal,
+  });
   return element;
 }
 
@@ -2249,9 +2303,16 @@ function appendReferenceText(fragment, text) {
     if (match.index > cursor) {
       fragment.append(text.slice(cursor, match.index));
     }
-    const from = (match[1] ?? match[3]).toLowerCase();
-    const to = match[2]?.toLowerCase() ?? null;
-    fragment.append(createSquareReference(from, to));
+
+    if (match[1]) {
+      const notation = match[1].replaceAll("0", "O").toUpperCase();
+      fragment.append(createCastlingReference(notation === "O-O-O"));
+    } else {
+      const from = (match[2] ?? match[4]).toLowerCase();
+      const to = match[3]?.toLowerCase() ?? null;
+      fragment.append(createSquareReference(from, to));
+    }
+
     cursor = match.index + match[0].length;
     found = true;
   }
@@ -2278,11 +2339,16 @@ function buildReferenceFragment(text) {
     }
 
     const content = match[1].trim();
+    const castling = content.match(/^(O-O-O|O-O|0-0-0|0-0)$/i);
     const exact = content.match(
       /^([a-h][1-8])\s*(?:(?:-|–|—|->|>|→|para|até)\s*([a-h][1-8]))?$/i,
     );
 
-    if (exact) {
+    if (castling) {
+      const notation = castling[1].replaceAll("0", "O").toUpperCase();
+      fragment.append(createCastlingReference(notation === "O-O-O"));
+      found = true;
+    } else if (exact) {
       fragment.append(
         createSquareReference(
           exact[1].toLowerCase(),
