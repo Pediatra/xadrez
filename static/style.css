@@ -46,7 +46,7 @@ textarea {
 }
 
 .page {
-  width: min(1240px, calc(100% - 2rem));
+  width: min(1380px, calc(100% - 2rem));
   margin-inline: auto;
   padding: 1rem 0 2rem;
 }
@@ -110,8 +110,29 @@ textarea {
 .app-layout {
   display: grid;
   grid-template-columns: minmax(0, 1.35fr) minmax(330px, 0.85fr);
+  grid-template-areas: "board chat";
   gap: 1rem;
   align-items: start;
+}
+
+.app-layout.coach-open {
+  grid-template-columns:
+    minmax(220px, 0.5fr)
+    minmax(500px, 1.3fr)
+    minmax(380px, 0.9fr);
+  grid-template-areas: "coach board chat";
+}
+
+.board-panel {
+  grid-area: board;
+}
+
+.chat-panel {
+  grid-area: chat;
+}
+
+.coach-panel {
+  grid-area: coach;
 }
 
 .panel {
@@ -501,10 +522,6 @@ textarea {
   font-weight: 700;
 }
 
-.chat-panel.coach-open {
-  min-height: 780px;
-}
-
 .chat-status {
   padding: 0.18rem 0.48rem;
   color: var(--pico-muted-color);
@@ -532,12 +549,15 @@ textarea {
 }
 
 .coach-panel {
-  flex: 0 0 auto;
-  padding: 0.55rem 1rem 0.5rem;
-  border-bottom: 1px solid var(--panel-border);
+  position: sticky;
+  top: 1rem;
+  display: flex;
+  flex-direction: column;
+  align-self: start;
+  padding: 0.8rem;
   background:
     radial-gradient(circle at 50% 0%, rgba(52, 211, 153, 0.07), transparent 16rem),
-    color-mix(in srgb, var(--panel-bg) 82%, #0a0f12);
+    var(--panel-bg);
   animation: bubble-in 180ms ease-out;
 }
 
@@ -554,14 +574,18 @@ textarea {
 
 .coach-head h3 {
   margin: 0;
-  font-size: 0.78rem;
+  font-size: 0.72rem;
   font-weight: 750;
-  letter-spacing: 0.045em;
+  letter-spacing: 0.03em;
   text-transform: uppercase;
+  white-space: nowrap;
 }
 
 .coach-head p {
-  display: none;
+  margin: 0.12rem 0 0;
+  color: var(--pico-muted-color);
+  font-size: 0.65rem;
+  line-height: 1.35;
 }
 
 .coach-close {
@@ -599,14 +623,15 @@ textarea {
   flex: 1 1 0;
   width: auto;
   margin: 0;
-  padding: 0.3rem 0.35rem;
+  padding: 0.3rem 0.2rem;
   border: 0;
   border-radius: 0.38rem;
   background: transparent;
   box-shadow: none;
   color: var(--pico-muted-color);
-  font-size: 0.67rem;
+  font-size: 0.64rem;
   font-weight: 700;
+  white-space: nowrap;
 }
 
 .coach-tabs button:hover {
@@ -624,8 +649,8 @@ textarea {
 }
 
 .coach-board-wrap {
-  width: min(100%, 170px);
-  margin: 0 auto 0.35rem;
+  width: min(100%, 220px);
+  margin: 0 auto 0.4rem;
   aspect-ratio: 1 / 1;
   overflow: hidden;
   border-radius: 0.4rem;
@@ -695,9 +720,11 @@ textarea {
 
 .coach-moves {
   display: flex;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
+  justify-content: center;
   gap: 0.22rem;
-  overflow-x: auto;
+  max-height: 84px;
+  overflow-y: auto;
   padding-bottom: 0.1rem;
   scrollbar-width: none;
 }
@@ -895,9 +922,31 @@ textarea {
   font-size: 0.68rem;
 }
 
-@media (max-width: 980px) {
+@media (min-width: 1000px) and (max-width: 1199px) {
+  .app-layout.coach-open {
+    grid-template-columns: 200px minmax(0, 1fr) 330px;
+    grid-template-areas: "coach board chat";
+  }
+}
+
+@media (max-width: 999px) {
   .app-layout {
     grid-template-columns: 1fr;
+    grid-template-areas:
+      "board"
+      "chat";
+  }
+
+  .app-layout.coach-open {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "coach"
+      "board"
+      "chat";
+  }
+
+  .coach-panel {
+    position: static;
   }
 
   .chat-panel {
@@ -906,31 +955,14 @@ textarea {
     min-height: 500px;
   }
 
-  .chat-panel.coach-open {
-    height: auto;
-    min-height: 780px;
-  }
-
-  .chat-panel.coach-open .chat-messages {
-    min-height: 220px;
-  }
-
   .board-row {
     max-width: 600px;
   }
 }
 
-@media (min-width: 981px) and (max-height: 800px) {
-  .chat-panel.coach-open {
-    position: static;
-    height: auto;
-    min-height: 780px;
-  }
-}
-
 @media (max-width: 620px) {
   .page {
-    width: min(100% - 1rem, 1240px);
+    width: min(100% - 1rem, 1380px);
     padding-top: 0.65rem;
   }
 
@@ -982,19 +1014,18 @@ textarea {
     min-height: 460px;
   }
 
-  .chat-panel.coach-open {
-    height: auto;
-    min-height: 780px;
-  }
-
   .trainer-level {
     width: 126px;
     max-width: 126px;
     font-size: 0.62rem;
   }
 
+  .coach-panel {
+    padding: 0.75rem;
+  }
+
   .coach-board-wrap {
-    width: min(100%, 165px);
+    width: min(100%, 220px);
   }
 
   .chat-messages {

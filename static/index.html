@@ -91,11 +91,51 @@
         </section>
       </section>
 
+      <aside class="panel coach-panel" id="coach-panel" aria-labelledby="coach-title" hidden>
+        <header class="coach-head">
+          <div>
+            <h3 id="coach-title">Lousa do treinador</h3>
+            <p>Veja a sequência em lances e no tabuleiro.</p>
+          </div>
+          <button
+            id="coach-close"
+            class="coach-close"
+            type="button"
+            aria-label="Fechar lousa do treinador"
+            title="Fechar lousa"
+          >×</button>
+        </header>
+
+        <div class="coach-tabs" role="tablist" aria-label="Linha exibida na lousa">
+          <button id="coach-tab-played" type="button" role="tab" aria-selected="true">Sua jogada</button>
+          <button id="coach-tab-best" type="button" role="tab" aria-selected="false">Melhor linha</button>
+        </div>
+
+        <div class="coach-board-wrap">
+          <div
+            id="coach-board"
+            class="coach-board"
+            aria-label="Tabuleiro virtual com a sequência analisada"
+          ></div>
+        </div>
+
+        <p class="coach-caption" id="coach-caption" aria-live="polite">Posição inicial da sequência.</p>
+
+        <div class="coach-controls" role="group" aria-label="Controles da lousa">
+          <button id="coach-start" type="button" aria-label="Voltar ao início" title="Voltar ao início">⏮</button>
+          <button id="coach-prev" type="button" aria-label="Lance anterior" title="Lance anterior">‹</button>
+          <button id="coach-play" type="button" aria-label="Reproduzir sequência" title="Reproduzir">▶</button>
+          <button id="coach-next" type="button" aria-label="Próximo lance" title="Próximo lance">›</button>
+          <span class="coach-step" id="coach-step">0 / 0</span>
+        </div>
+
+        <div class="coach-moves" id="coach-moves" aria-label="Lances da sequência"></div>
+      </aside>
+
       <aside class="panel chat-panel" aria-labelledby="chat-heading">
         <header class="chat-head">
           <div>
             <h2 id="chat-heading">Treinador IA</h2>
-            <p class="muted small">Gemini · agy local</p>
           </div>
           <div class="chat-head-tools">
             <select
@@ -111,47 +151,6 @@
             <span class="chat-status" id="chat-status" data-state="ready">pronto</span>
           </div>
         </header>
-
-        <section class="coach-panel" id="coach-panel" aria-labelledby="coach-title" hidden>
-          <header class="coach-head">
-            <div>
-              <h3 id="coach-title">Lousa do treinador</h3>
-              <p>Veja a sequência em lances e no tabuleiro.</p>
-            </div>
-            <button
-              id="coach-close"
-              class="coach-close"
-              type="button"
-              aria-label="Fechar lousa do treinador"
-              title="Fechar lousa"
-            >×</button>
-          </header>
-
-          <div class="coach-tabs" role="tablist" aria-label="Linha exibida na lousa">
-            <button id="coach-tab-played" type="button" role="tab" aria-selected="true">Sua jogada</button>
-            <button id="coach-tab-best" type="button" role="tab" aria-selected="false">Melhor linha</button>
-          </div>
-
-          <div class="coach-board-wrap">
-            <div
-              id="coach-board"
-              class="coach-board"
-              aria-label="Tabuleiro virtual com a sequência analisada"
-            ></div>
-          </div>
-
-          <p class="coach-caption" id="coach-caption" aria-live="polite">Posição inicial da sequência.</p>
-
-          <div class="coach-controls" role="group" aria-label="Controles da lousa">
-            <button id="coach-start" type="button" aria-label="Voltar ao início" title="Voltar ao início">⏮</button>
-            <button id="coach-prev" type="button" aria-label="Lance anterior" title="Lance anterior">‹</button>
-            <button id="coach-play" type="button" aria-label="Reproduzir sequência" title="Reproduzir">▶</button>
-            <button id="coach-next" type="button" aria-label="Próximo lance" title="Próximo lance">›</button>
-            <span class="coach-step" id="coach-step">0 / 0</span>
-          </div>
-
-          <div class="coach-moves" id="coach-moves" aria-label="Lances da sequência"></div>
-        </section>
 
         <div class="chat-messages" id="chat-messages" role="log" aria-label="Conversa com o treinador">
           <article class="chat-bubble trainer">

@@ -52,7 +52,7 @@ const ui = {
   chatInput: $("#chat-input"),
   chatSend: $("#chat-send"),
   chatStatus: $("#chat-status"),
-  chatPanel: $(".chat-panel"),
+  appLayout: $(".app-layout"),
   trainerLevel: $("#trainer-level"),
   coachPanel: $("#coach-panel"),
   coachBoard: $("#coach-board"),
@@ -757,7 +757,7 @@ function showCoachBoard(result) {
   coach.playing = false;
 
   ui.coachPanel.hidden = false;
-  ui.chatPanel.classList.add("coach-open");
+  ui.appLayout.classList.add("coach-open");
 
   ensureCoachGround();
   updateCoachTabs();
@@ -773,7 +773,7 @@ function hideCoachBoard() {
   coach.playing = false;
 
   ui.coachPanel.hidden = true;
-  ui.chatPanel.classList.remove("coach-open");
+  ui.appLayout.classList.remove("coach-open");
   ui.coachMoves.replaceChildren();
   ui.coachCaption.textContent = "Posição inicial da sequência.";
 }

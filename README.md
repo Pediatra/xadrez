@@ -178,11 +178,13 @@ o caminho do `agy`, se ele existe e qual `AGY_MODEL` está em uso.
 - Quando seu lance for classificado como **Imprecisão**, **Erro** ou **Gafe**,
   o tabuleiro desenha uma seta vermelha no lance jogado e uma verde no melhor
   lance do Stockfish. A explicação automática do treinador começa em seguida.
-- Nesses lances, a **Lousa do treinador** abre com um tabuleiro virtual e duas
-  abas: **Sua jogada** mostra seu lance e a continuação que o adversário pode
-  forçar; **Melhor linha** mostra a sequência que o Stockfish preferia. Os
-  controles permitem avançar, voltar e reproduzir a sequência. Cada lance tem
-  uma descrição em palavras, como “cavalo branco de f4 captura peão preto em d5”.
+- Nesses lances, a **Lousa do treinador** abre à esquerda do tabuleiro principal,
+  com o chat à direita. Ela tem um tabuleiro virtual e duas abas: **Sua jogada**
+  mostra seu lance e a continuação que o adversário pode forçar; **Melhor linha**
+  mostra a sequência que o Stockfish preferia. Os controles permitem avançar,
+  voltar e reproduzir a sequência. Cada lance tem uma descrição em palavras,
+  como “cavalo branco de f4 captura peão preto em d5”. Em telas estreitas, os
+  painéis se empilham.
 - O seletor no topo do chat define o nível da explicação: **Iniciante** (padrão),
   **Intermediário** ou **Avançado**. No modo iniciante, o treinador evita
   notação solta e explica a peça, as casas e a ideia por trás do lance.
