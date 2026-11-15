@@ -271,3 +271,49 @@ com um único comando depois do ambiente configurado:
 ```bash
 uvicorn main:app
 ```
+
+## 9. Serviço systemd e Tailscale (este host)
+
+A aplicação está instalada como serviço **de usuário** do systemd, com `linger`
+habilitado. Assim, ela inicia no boot mesmo antes de você abrir a sessão gráfica:
+
+```text
+~/.config/systemd/user/xadrez.service   # enabled
+```
+
+O `tailscaled` também já está habilitado no boot. A aplicação escuta somente em
+`127.0.0.1:8000`; o Tailscale Serve publica essa porta, apenas dentro da tailnet,
+em:
+
+<https://bazzite.tailc0cd32.ts.net:8443/>
+
+O `tailscale serve` existente na porta 443 (proxy para `127.0.0.1:3081`) foi
+preservado. A configuração do Serve fica persistida pelo `tailscaled`, e o
+serviço da aplicação também a reaplica no `ExecStartPost` a cada início.
+
+Comandos úteis:
+
+```bash
+systemctl --user status xadrez.service
+systemctl --user restart xadrez.service
+journalctl --user -u xadrez.service -f
+tailscale serve status
+```
+
+Para recriar a exposição no Tailscale manualmente:
+
+```bash
+tailscale serve --bg --yes --https=8443 http://127.0.0.1:8000
+```
+
+A URL é privada da tailnet (não é Funnel e não fica pública na internet). Se o
+nome da máquina no Tailscale mudar, gere a nova URL com `tailscale serve status`.
+
+Depois de instalar o Stockfish ou alterar o `.env`, reinicie o serviço:
+
+```bash
+systemctl --user restart xadrez.service
+```
+
+O `/health` continua mostrando `degraded` enquanto o Stockfish não estiver
+instalado; o chat e o tabuleiro funcionam, mas a análise da partida não.
