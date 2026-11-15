@@ -743,15 +743,15 @@ function init() {
       brushes: {
         reference: {
           key: "reference",
-          color: "#fbbf24",
-          opacity: 0.45,
-          lineWidth: 6,
+          color: "#dc2626",
+          opacity: 1,
+          lineWidth: 9,
         },
         referenceArrow: {
           key: "referenceArrow",
-          color: "#fbbf24",
-          opacity: 0.88,
-          lineWidth: 10,
+          color: "#dc2626",
+          opacity: 0.95,
+          lineWidth: 11,
         },
         referenceInvalid: {
           key: "referenceInvalid",

@@ -1331,7 +1331,7 @@ textarea {
 }
 
 .board-shell.ref-highlight .cg-shapes {
-  filter: drop-shadow(0 0 6px rgba(251, 191, 36, 0.75));
+  filter: drop-shadow(0 0 7px rgba(220, 38, 38, 0.9));
 }
 
 .board-shell.ref-highlight.ref-invalid .cg-shapes {
