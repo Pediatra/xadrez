@@ -8,7 +8,7 @@ import os
 import shutil
 import signal
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Literal
 
 import chess
 import chess.engine
@@ -70,6 +70,30 @@ TRAINER_RULES = (
     "responda somente com texto, em no máximo 2 parágrafos."
 )
 
+STUDENT_GUIDANCE: dict[str, tuple[str, ...]] = {
+    "beginner": (
+        "PERFIL DO ALUNO: INICIANTE, ainda aprendendo os fundamentos do xadrez.",
+        "Explique como para alguém que não domina notação: diga o nome da peça, de onde ela sai, para onde vai e o que muda na posição (captura, defesa, ataque, desenvolvimento, controle do centro, segurança do rei).",
+        "Nunca responda apenas com códigos como Nf3, Bf4, exd5 ou coordenadas soltas. Se precisar citar a notação, explique primeiro em palavras e coloque o código entre parênteses.",
+        "A interface tem uma 'lousa do treinador': um tabuleiro virtual com as abas 'Sua jogada' e 'Melhor linha'. Ao explicar uma sequência, peça ao aluno para acompanhar a lousa e descreva os primeiros lances em palavras simples.",
+        "Não abra a resposta com a avaliação em centipawns nem recite a linha inteira. Comente no máximo dois ou três lances da sequência no texto e deixe o restante para a lousa.",
+        "Deixe claro que a linha da lousa é uma continuação possível calculada pelo motor, não algo que já aconteceu na partida.",
+        "Escolha no máximo duas ideias principais e use frases curtas, sem jargão não explicado.",
+    ),
+    "intermediate": (
+        "PERFIL DO ALUNO: INTERMEDIÁRIO. Ele conhece as regras e os temas táticos básicos.",
+        "Pode usar notação com moderação, mas sempre associe o código ao nome da peça, à casa de origem e à ideia por trás do lance.",
+        "A interface tem uma 'lousa do treinador' com as abas 'Sua jogada' e 'Melhor linha'; use-a como referência para explicar a sequência.",
+        "Não invente lances além dos dados fornecidos e explique o conceito antes de aprofundar detalhes.",
+    ),
+    "advanced": (
+        "PERFIL DO ALUNO: AVANÇADO. Ele domina notação e conceitos estratégicos.",
+        "Pode ser direto e técnico, citando notação, mas ainda explique o raciocínio tático ou estratégico por trás dos números.",
+        "A interface tem uma 'lousa do treinador' com as abas 'Sua jogada' e 'Melhor linha'; refira-se a ela ao comentar a sequência.",
+        "Não invente lances além dos dados fornecidos.",
+    ),
+}
+
 
 class MoveValidationError(ValueError):
     """O lance ou o FEN enviado pelo cliente não é válido."""
@@ -116,6 +140,7 @@ class ChatAnalysis(BaseModel):
     best_move: str | None = Field(None, max_length=30)
     best_move_uci: str | None = Field(None, max_length=10)
     pv: list[str] | None = Field(None, max_length=20)
+    refutation_pv: list[str] | None = Field(None, max_length=20)
     cp_loss: int | None = Field(None, ge=0, le=MAX_CP_LOSS)
     classification: str | None = Field(None, max_length=30)
     eval_before: str | None = Field(None, max_length=30)
@@ -127,6 +152,7 @@ class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=4_000)
     fen: str | None = Field(None, max_length=120)
     pgn: str | None = Field(None, max_length=20_000)
+    student_level: Literal["beginner", "intermediate", "advanced"] = "beginner"
     analysis: ChatAnalysis | None = None
 
     @field_validator("message")
@@ -392,6 +418,7 @@ def _move_and_analyze_sync(
         board_after_user.push(move)
 
         after_best: chess.Move | None = None
+        refutation_pv: list[chess.Move] = []
         if board_after_user.is_game_over():
             cp_after_user = _terminal_cp(board_after_user, user_color)
             eval_after_user = _terminal_eval(board_after_user)
@@ -400,8 +427,11 @@ def _move_and_analyze_sync(
                 engine, board_after_user, ANALYSIS_DEPTH, ANALYSIS_TIME_SECONDS
             )
             after_best = pv_after[0] if pv_after else None
+            refutation_pv = pv_after
             cp_after_user = _score_cp(score_after, user_color)
             eval_after_user = _eval_from_score(score_after)
+
+        refutation_pv_san = _pv_to_san(board_after_user, refutation_pv)
 
         cp_loss = max(0, min(MAX_CP_LOSS, cp_before_user - cp_after_user))
         classification = _classify(
@@ -462,6 +492,8 @@ def _move_and_analyze_sync(
             "bot_move": bot_move_data,
             "pv": [m.uci() for m in pv_before[:10]],
             "pv_san": pv_san,
+            "refutation_pv": [m.uci() for m in refutation_pv[:10]],
+            "refutation_pv_san": refutation_pv_san,
             "evaluation": {
                 "before": eval_before,
                 "after_user": eval_after_user,
@@ -510,6 +542,8 @@ def build_trainer_prompt(request: ChatRequest) -> str:
         "Se os dados do motor não estiverem disponíveis, diga isso com franqueza e não invente um melhor lance.",
         "Responda em no máximo 2 parágrafos, sem listas longas e sem markdown complicado.",
         "",
+        *STUDENT_GUIDANCE[request.student_level],
+        "",
         "DADOS DA PARTIDA",
         f"FEN atual: {_display_fen(request.fen)}",
         "Histórico PGN:",
@@ -529,6 +563,11 @@ def build_trainer_prompt(request: ChatRequest) -> str:
             lines.append(f"Melhor lance segundo o Stockfish: {analysis.best_move}{uci}")
         if analysis.pv:
             lines.append(f"Linha principal (PV): {' '.join(analysis.pv)}")
+        if analysis.refutation_pv:
+            lines.append(
+                "Linha de refutação, depois do lance do aluno: "
+                + " ".join(analysis.refutation_pv)
+            )
         if analysis.cp_loss is not None:
             lines.append(f"Perda de avaliação: {analysis.cp_loss} centipawns")
         if analysis.classification:

@@ -178,6 +178,14 @@ o caminho do `agy`, se ele existe e qual `AGY_MODEL` está em uso.
 - Quando seu lance for classificado como **Imprecisão**, **Erro** ou **Gafe**,
   o tabuleiro desenha uma seta vermelha no lance jogado e uma verde no melhor
   lance do Stockfish. A explicação automática do treinador começa em seguida.
+- Nesses lances, a **Lousa do treinador** abre com um tabuleiro virtual e duas
+  abas: **Sua jogada** mostra seu lance e a continuação que o adversário pode
+  forçar; **Melhor linha** mostra a sequência que o Stockfish preferia. Os
+  controles permitem avançar, voltar e reproduzir a sequência. Cada lance tem
+  uma descrição em palavras, como “cavalo branco de f4 captura peão preto em d5”.
+- O seletor no topo do chat define o nível da explicação: **Iniciante** (padrão),
+  **Intermediário** ou **Avançado**. No modo iniciante, o treinador evita
+  notação solta e explica a peça, as casas e a ideia por trás do lance.
 - Você pode perguntar qualquer coisa no chat a qualquer momento. O frontend
   anexa silenciosamente o FEN e o PGN atuais a cada mensagem.
 
@@ -218,6 +226,7 @@ perda de centipawns, classifica o lance e devolve, na mesma resposta:
 - o lance do bot;
 - o melhor lance que o usuário deveria ter jogado;
 - a linha principal (PV), em UCI e SAN;
+- a linha de refutação depois do lance do usuário, em UCI e SAN;
 - as avaliações antes, depois do lance do usuário e depois do bot;
 - FENs, classificação, perda de centipawns e resultado da partida.
 
@@ -225,7 +234,9 @@ perda de centipawns, classifica o lance e devolve, na mesma resposta:
 
 Recebe uma mensagem e o contexto opcional da partida e responde com
 `text/event-stream`. O frontend usa `fetch` + `ReadableStream`, pois
-`EventSource` não suporta POST.
+`EventSource` não suporta POST. O campo `student_level` aceita `beginner`
+(padrão), `intermediate` ou `advanced`; o contexto `analysis` pode incluir a
+`refutation_pv` para o treinador explicar a sequência da lousa.
 
 Cada evento SSE é uma linha `data:` com JSON incremental:
 

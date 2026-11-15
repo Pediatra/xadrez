@@ -16,6 +16,17 @@ const QUALITY_SLUGS = {
   Erro: "erro",
   Gafe: "gafe",
 };
+const TRAINER_LEVELS = new Set(["beginner", "intermediate", "advanced"]);
+const PIECE_NAMES = {
+  p: "peão",
+  n: "cavalo",
+  b: "bispo",
+  r: "torre",
+  q: "dama",
+  k: "rei",
+};
+const FEMININE_PIECES = new Set(["q", "r"]);
+const COACH_MAX_PLIES = 8;
 
 const $ = (selector) => document.querySelector(selector);
 
@@ -41,6 +52,20 @@ const ui = {
   chatInput: $("#chat-input"),
   chatSend: $("#chat-send"),
   chatStatus: $("#chat-status"),
+  chatPanel: $(".chat-panel"),
+  trainerLevel: $("#trainer-level"),
+  coachPanel: $("#coach-panel"),
+  coachBoard: $("#coach-board"),
+  coachClose: $("#coach-close"),
+  coachTabPlayed: $("#coach-tab-played"),
+  coachTabBest: $("#coach-tab-best"),
+  coachCaption: $("#coach-caption"),
+  coachStart: $("#coach-start"),
+  coachPrev: $("#coach-prev"),
+  coachPlay: $("#coach-play"),
+  coachNext: $("#coach-next"),
+  coachStep: $("#coach-step"),
+  coachMoves: $("#coach-moves"),
 };
 
 const state = {
@@ -56,6 +81,16 @@ const state = {
   arrowsTimer: null,
   evalByFen: new Map(),
   lastAnalysis: null,
+  trainerLevel: "beginner",
+};
+
+const coach = {
+  ground: null,
+  lines: { played: null, best: null },
+  active: "played",
+  step: 0,
+  playing: false,
+  timer: null,
 };
 
 let ground = null;
@@ -96,8 +131,28 @@ function lastMoveFromHistory() {
   return last ? [last.from, last.to] : undefined;
 }
 
+function loadTrainerLevel() {
+  try {
+    const saved = window.localStorage.getItem("xadrez-trainer-level");
+    if (TRAINER_LEVELS.has(saved)) return saved;
+  } catch {
+    // localStorage pode estar bloqueado; usa o padrão iniciante.
+  }
+  return "beginner";
+}
+
+function saveTrainerLevel(level) {
+  try {
+    window.localStorage.setItem("xadrez-trainer-level", level);
+  } catch {
+    // Sem localStorage, a escolha vale só para esta sessão.
+  }
+}
+
 function init() {
   state.evalByFen.set(fenKey(START_FEN), NEUTRAL_EVAL);
+  state.trainerLevel = loadTrainerLevel();
+  ui.trainerLevel.value = state.trainerLevel;
 
   ground = Chessground(ui.board, {
     fen: state.game.fen(),
@@ -135,6 +190,32 @@ function bindEvents() {
     state.level = Number.parseInt(ui.botLevel.value, 10) || 3;
   });
 
+  ui.trainerLevel.addEventListener("change", () => {
+    const level = ui.trainerLevel.value;
+    state.trainerLevel = TRAINER_LEVELS.has(level) ? level : "beginner";
+    saveTrainerLevel(state.trainerLevel);
+  });
+
+  ui.coachClose.addEventListener("click", hideCoachBoard);
+  ui.coachTabPlayed.addEventListener("click", () => setCoachTab("played"));
+  ui.coachTabBest.addEventListener("click", () => setCoachTab("best"));
+  ui.coachStart.addEventListener("click", () => {
+    stopCoachPlayback();
+    coach.step = 0;
+    renderCoach();
+  });
+  ui.coachPrev.addEventListener("click", () => {
+    stopCoachPlayback();
+    coach.step = Math.max(0, coach.step - 1);
+    renderCoach();
+  });
+  ui.coachNext.addEventListener("click", () => {
+    stopCoachPlayback();
+    coach.step = Math.min(currentCoachLine()?.moves.length ?? 0, coach.step + 1);
+    renderCoach();
+  });
+  ui.coachPlay.addEventListener("click", toggleCoachPlayback);
+
   ui.chatForm.addEventListener("submit", (event) => {
     event.preventDefault();
     submitChat();
@@ -149,6 +230,7 @@ function bindEvents() {
 
   window.addEventListener("pagehide", () => {
     state.moveController?.abort();
+    stopCoachPlayback();
   });
 }
 
@@ -403,6 +485,7 @@ async function analyzeUserMove({ fenBefore, fenAfterUser, uci, lastMove }) {
   renderMoves();
   hideQualityBadge();
   clearArrows();
+  hideCoachBoard();
 
   const controller = new AbortController();
   state.moveController = controller;
@@ -448,6 +531,7 @@ async function handleAnalysisResult(result, signal) {
 
   const isBad = BAD_CLASSIFICATIONS.has(result.classification);
   if (isBad && result.best_move?.uci) {
+    showCoachBoard(result);
     drawArrows(result.user_move?.uci, result.best_move.uci);
     enqueueAutoExplanation(result);
     updateTurnPill();
@@ -524,6 +608,326 @@ function applyBotMove(result) {
   if (result.game_over) updateTurnPill();
 }
 
+function capitalizeFirst(text) {
+  return text.length > 0 ? text[0].toUpperCase() + text.slice(1) : text;
+}
+
+function pieceWithColor(piece, color) {
+  const base = PIECE_NAMES[piece] ?? "peça";
+  const feminine = FEMININE_PIECES.has(piece);
+  const colorName =
+    color === "w"
+      ? feminine
+        ? "branca"
+        : "branco"
+      : feminine
+        ? "preta"
+        : "preto";
+  return `${base} ${colorName}`;
+}
+
+function describeCoachMove(move, boardAfter) {
+  const piece = capitalizeFirst(pieceWithColor(move.piece, move.color));
+  const captured = move.captured
+    ? pieceWithColor(move.captured, move.color === "w" ? "b" : "w")
+    : null;
+
+  let text;
+  if (move.flags.includes("k")) {
+    text = `${piece} de ${move.from} para ${move.to} (roque curto)`;
+  } else if (move.flags.includes("q")) {
+    text = `${piece} de ${move.from} para ${move.to} (roque longo)`;
+  } else if (move.promotion) {
+    const promoted = PIECE_NAMES[move.promotion] ?? "dama";
+    text = captured
+      ? `${piece} de ${move.from} captura ${captured} em ${move.to} e é promovido a ${promoted}`
+      : `${piece} de ${move.from} para ${move.to} e é promovido a ${promoted}`;
+  } else if (captured) {
+    text = `${piece} de ${move.from} captura ${captured} em ${move.to}`;
+  } else {
+    text = `${piece} de ${move.from} para ${move.to}`;
+  }
+
+  if (move.flags.includes("e")) text += " (captura en passant)";
+  if (boardAfter.isCheckmate()) text += " e dá xeque-mate";
+  else if (boardAfter.inCheck()) text += " e dá xeque";
+  return text;
+}
+
+function buildCoachLine(startFen, ucis) {
+  const line = { startFen, moves: [], fens: [startFen] };
+  let chess;
+  try {
+    chess = new Chess(startFen);
+  } catch {
+    return line;
+  }
+
+  const moves = Array.isArray(ucis) ? ucis.slice(0, COACH_MAX_PLIES) : [];
+  for (const uci of moves) {
+    if (typeof uci !== "string" || uci.length < 4) continue;
+
+    const beforeFen = chess.fen();
+    const number = Number.parseInt(beforeFen.split(" ")[5], 10) || 1;
+    const color = chess.turn();
+    let move;
+
+    try {
+      move = chess.move({
+        from: uci.slice(0, 2),
+        to: uci.slice(2, 4),
+        promotion: uci.length > 4 ? uci[4] : undefined,
+      });
+    } catch {
+      break;
+    }
+    if (!move) break;
+
+    const fen = chess.fen();
+    line.moves.push({
+      uci: `${move.from}${move.to}${move.promotion ?? ""}`,
+      san: move.san,
+      from: move.from,
+      to: move.to,
+      color,
+      number,
+      fen,
+      description: describeCoachMove(move, chess),
+    });
+    line.fens.push(fen);
+
+    if (chess.isGameOver()) break;
+  }
+
+  return line;
+}
+
+function buildCoachLines(result) {
+  const startFen = result.fen_before;
+  const bestUcis =
+    Array.isArray(result.pv) && result.pv.length > 0
+      ? result.pv
+      : result.best_move?.uci
+        ? [result.best_move.uci]
+        : [];
+
+  const playedUcis = [];
+  if (result.user_move?.uci) playedUcis.push(result.user_move.uci);
+  if (Array.isArray(result.refutation_pv)) {
+    playedUcis.push(...result.refutation_pv);
+  }
+
+  return {
+    best: buildCoachLine(startFen, bestUcis),
+    played: buildCoachLine(startFen, playedUcis),
+  };
+}
+
+function currentCoachLine() {
+  return coach.lines[coach.active] ?? null;
+}
+
+function ensureCoachGround() {
+  if (coach.ground) return;
+  const line = currentCoachLine();
+  if (!line) return;
+
+  coach.ground = Chessground(ui.coachBoard, {
+    fen: line.fens[0],
+    orientation: state.orientation,
+    viewOnly: true,
+    coordinates: false,
+    animation: { enabled: true, duration: 220 },
+    highlight: { lastMove: true, check: true },
+    drawable: { enabled: false, visible: true },
+  });
+}
+
+function showCoachBoard(result) {
+  const lines = buildCoachLines(result);
+  if (lines.best.moves.length === 0 && lines.played.moves.length === 0) {
+    hideCoachBoard();
+    return;
+  }
+
+  stopCoachPlayback();
+  coach.lines = lines;
+  coach.active = lines.played.moves.length > 0 ? "played" : "best";
+  coach.step = 0;
+  coach.playing = false;
+
+  ui.coachPanel.hidden = false;
+  ui.chatPanel.classList.add("coach-open");
+
+  ensureCoachGround();
+  updateCoachTabs();
+  renderCoachMoves();
+  renderCoach();
+}
+
+function hideCoachBoard() {
+  stopCoachPlayback();
+  coach.lines = { played: null, best: null };
+  coach.active = "played";
+  coach.step = 0;
+  coach.playing = false;
+
+  ui.coachPanel.hidden = true;
+  ui.chatPanel.classList.remove("coach-open");
+  ui.coachMoves.replaceChildren();
+  ui.coachCaption.textContent = "Posição inicial da sequência.";
+}
+
+function setCoachTab(tab) {
+  const line = coach.lines[tab];
+  if (!line || line.moves.length === 0) return;
+
+  stopCoachPlayback();
+  coach.active = tab;
+  coach.step = 0;
+  updateCoachTabs();
+  renderCoachMoves();
+  renderCoach();
+}
+
+function updateCoachTabs() {
+  const playedAvailable = Boolean(coach.lines.played?.moves.length);
+  const bestAvailable = Boolean(coach.lines.best?.moves.length);
+
+  ui.coachTabPlayed.disabled = !playedAvailable;
+  ui.coachTabBest.disabled = !bestAvailable;
+  ui.coachTabPlayed.setAttribute(
+    "aria-selected",
+    String(coach.active === "played"),
+  );
+  ui.coachTabBest.setAttribute("aria-selected", String(coach.active === "best"));
+}
+
+function renderCoachMoves() {
+  ui.coachMoves.replaceChildren();
+  const line = currentCoachLine();
+  if (!line) return;
+
+  line.moves.forEach((move, index) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "coach-move";
+    button.textContent = `${move.number}${move.color === "w" ? "." : "..."} ${move.san}`;
+    button.title = move.description;
+    button.setAttribute("aria-current", String(index + 1 === coach.step));
+    button.addEventListener("click", () => {
+      stopCoachPlayback();
+      coach.step = index + 1;
+      renderCoach();
+    });
+    ui.coachMoves.append(button);
+  });
+}
+
+function renderCoach() {
+  const line = currentCoachLine();
+  if (!line || !coach.ground) return;
+
+  coach.step = Math.max(0, Math.min(line.moves.length, coach.step));
+  const fen = line.fens[coach.step];
+  const lastMove = coach.step > 0 ? line.moves[coach.step - 1] : null;
+
+  let inCheck = false;
+  try {
+    inCheck = new Chess(fen).inCheck();
+  } catch {
+    inCheck = false;
+  }
+
+  const turnColor = fen.split(" ")[1] === "b" ? "black" : "white";
+  coach.ground.set({
+    fen,
+    orientation: state.orientation,
+    turnColor,
+    check: inCheck ? turnColor : false,
+    lastMove: lastMove ? [lastMove.from, lastMove.to] : undefined,
+  });
+
+  if (lastMove) {
+    const brush =
+      coach.active === "best" ? "green" : coach.step === 1 ? "red" : "blue";
+    coach.ground.setShapes([
+      { orig: lastMove.from, dest: lastMove.to, brush },
+    ]);
+  } else {
+    coach.ground.setShapes([]);
+  }
+
+  if (lastMove) {
+    let prefix;
+    if (coach.step === 1) {
+      prefix = coach.active === "played" ? "Seu lance" : "Melhor lance";
+    } else if (coach.active === "played" && coach.step === 2) {
+      prefix = "Resposta do adversário";
+    } else {
+      prefix =
+        coach.active === "played" ? "Continuação possível" : "Continuação";
+    }
+    ui.coachCaption.textContent = `${prefix}: ${lastMove.description}.`;
+  } else if (coach.active === "played") {
+    ui.coachCaption.textContent =
+      "Posição antes do seu lance. Use ▶ para ver o que o adversário pode fazer.";
+  } else {
+    ui.coachCaption.textContent =
+      "Posição antes do lance. Use ▶ para ver a linha que o Stockfish preferia.";
+  }
+
+  ui.coachStep.textContent = `${coach.step} / ${line.moves.length}`;
+  ui.coachStart.disabled = coach.step === 0;
+  ui.coachPrev.disabled = coach.step === 0;
+  ui.coachNext.disabled = coach.step >= line.moves.length;
+  ui.coachPlay.disabled = line.moves.length === 0;
+  ui.coachPlay.textContent = coach.playing ? "⏸" : "▶";
+  ui.coachPlay.setAttribute(
+    "aria-label",
+    coach.playing ? "Pausar sequência" : "Reproduzir sequência",
+  );
+  ui.coachPlay.title = coach.playing ? "Pausar" : "Reproduzir";
+
+  [...ui.coachMoves.children].forEach((button, index) => {
+    button.setAttribute("aria-current", String(index + 1 === coach.step));
+  });
+}
+
+function stopCoachPlayback() {
+  if (coach.timer !== null) {
+    window.clearInterval(coach.timer);
+    coach.timer = null;
+  }
+  coach.playing = false;
+}
+
+function toggleCoachPlayback() {
+  const line = currentCoachLine();
+  if (!line || line.moves.length === 0) return;
+
+  if (coach.playing) {
+    stopCoachPlayback();
+    renderCoach();
+    return;
+  }
+
+  if (coach.step >= line.moves.length) coach.step = 0;
+  coach.playing = true;
+  renderCoach();
+
+  coach.timer = window.setInterval(() => {
+    const activeLine = currentCoachLine();
+    if (!activeLine || coach.step >= activeLine.moves.length) {
+      stopCoachPlayback();
+      renderCoach();
+      return;
+    }
+    coach.step += 1;
+    renderCoach();
+  }, 1200);
+}
+
 function rollbackMove(fenAfterUser, message) {
   if (state.game.fen() === fenAfterUser) {
     state.game.undo();
@@ -550,6 +954,7 @@ function startNewGame() {
   setAnalyzing(false);
   clearArrows();
   hideQualityBadge();
+  hideCoachBoard();
   renderBoard();
   renderMoves();
   updateEval(NEUTRAL_EVAL);
@@ -559,6 +964,10 @@ function startNewGame() {
 function flipBoard() {
   state.orientation = state.orientation === "white" ? "black" : "white";
   ground.set({ orientation: state.orientation });
+  if (coach.ground) {
+    coach.ground.set({ orientation: state.orientation });
+    renderCoach();
+  }
   ui.evalBar.classList.toggle("flipped", state.orientation === "black");
 }
 
@@ -571,6 +980,7 @@ function undoMove() {
   setAnalyzing(false);
   clearArrows();
   hideQualityBadge();
+  hideCoachBoard();
 
   let undone = 0;
   do {
@@ -593,6 +1003,9 @@ function analysisContext(result) {
     best_move: result.best_move?.san ?? null,
     best_move_uci: result.best_move?.uci ?? null,
     pv: Array.isArray(result.pv_san) ? result.pv_san : null,
+    refutation_pv: Array.isArray(result.refutation_pv_san)
+      ? result.refutation_pv_san
+      : null,
     cp_loss: Number.isFinite(result.cp_loss) ? result.cp_loss : null,
     classification: result.classification ?? null,
     eval_before: result.evaluation?.before?.label ?? null,
@@ -606,8 +1019,17 @@ function buildChatPayload(message, analysis = null) {
     message,
     fen: state.game.fen(),
     pgn: state.game.pgn(),
+    student_level: state.trainerLevel,
     analysis,
   };
+}
+
+function trainerLevelLabel() {
+  return {
+    beginner: "iniciante",
+    intermediate: "intermediário",
+    advanced: "avançado",
+  }[state.trainerLevel] ?? "iniciante";
 }
 
 function enqueueAutoExplanation(result) {
@@ -618,7 +1040,7 @@ function enqueueAutoExplanation(result) {
     `do melhor lance ${best} e por que o meu lance foi pior.`;
 
   appendChatNote(
-    `Stockfish: ${result.classification} · explicação automática solicitada`,
+    `Stockfish: ${result.classification} · explicação para ${trainerLevelLabel()}`,
   );
   state.chatQueue.push(buildChatPayload(message, analysisContext(result)));
   pumpChatQueue();
