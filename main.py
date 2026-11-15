@@ -1,0 +1,971 @@
+"""Treino de xadrez local: Stockfish + treinador Gemini via CLI `agy`."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import shutil
+import signal
+from pathlib import Path
+from typing import Any, AsyncIterator
+
+import chess
+import chess.engine
+from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field, field_validator
+
+BASE_DIR = Path(__file__).resolve().parent
+STATIC_DIR = BASE_DIR / "static"
+load_dotenv(BASE_DIR / ".env")
+
+MATE_SCORE = 100_000
+MAX_CP_LOSS = 2_000
+ANALYSIS_DEPTH = 12
+ANALYSIS_TIME_SECONDS = 2.0
+FINAL_EVAL_DEPTH = 10
+FINAL_EVAL_TIME_SECONDS = 1.0
+BOT_TIME_SECONDS = 2.0
+
+# Nível -> (profundidade do bot, Skill Level do Stockfish).
+BOT_LEVELS: dict[int, tuple[int, int]] = {
+    1: (4, 0),
+    2: (6, 4),
+    3: (8, 8),
+    4: (10, 13),
+    5: (12, 20),
+}
+
+VALID_AGY_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
+VALID_AGY_MODELS = {
+    "gemini-4-hydrogen-low",
+    "gemini-4-hydrogen-medium",
+    "gemini-4-hydrogen-high",
+    "gemini-4-hydrogen-xhigh",
+}
+
+def _env_number(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+AGY_MODEL = os.getenv("AGY_MODEL", "gemini-4-hydrogen-high").strip()
+AGY_EFFORT = os.getenv("AGY_EFFORT", "high").strip().lower()
+AGY_TIMEOUT_SECONDS = max(1.0, _env_number("AGY_TIMEOUT_SECONDS", 120.0))
+AGY_MAX_CONCURRENCY = max(1, int(_env_number("AGY_MAX_CONCURRENCY", 1)))
+AGY_SANDBOX = os.getenv("AGY_SANDBOX", "1").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
+
+TRAINER_RULES = (
+    "Não use ferramentas, não leia arquivos e não execute comandos: "
+    "responda somente com texto, em no máximo 2 parágrafos."
+)
+
+
+class MoveValidationError(ValueError):
+    """O lance ou o FEN enviado pelo cliente não é válido."""
+
+
+class StockfishUnavailable(RuntimeError):
+    """O executável do Stockfish não foi encontrado."""
+
+
+class StockfishFailure(RuntimeError):
+    """O Stockfish falhou durante a análise."""
+
+
+class ClientDisconnected(Exception):
+    """O navegador encerrou a conexão SSE."""
+
+
+class MoveAndAnalyzeRequest(BaseModel):
+    fen: str = Field(..., min_length=10, max_length=120)
+    move: str = Field(..., min_length=4, max_length=5)
+    level: int = Field(3, ge=1, le=5)
+
+    @field_validator("fen")
+    @classmethod
+    def validate_fen(cls, value: str) -> str:
+        try:
+            board = chess.Board(value.strip())
+        except ValueError as exc:
+            raise ValueError("FEN inválido.") from exc
+        if not board.is_valid():
+            raise ValueError("FEN inválido ou posição ilegal.")
+        return board.fen()
+
+    @field_validator("move")
+    @classmethod
+    def normalize_move(cls, value: str) -> str:
+        return value.strip().lower()
+
+
+class ChatAnalysis(BaseModel):
+    fen_before: str | None = Field(None, max_length=120)
+    played: str | None = Field(None, max_length=30)
+    played_uci: str | None = Field(None, max_length=10)
+    best_move: str | None = Field(None, max_length=30)
+    best_move_uci: str | None = Field(None, max_length=10)
+    pv: list[str] | None = Field(None, max_length=20)
+    cp_loss: int | None = Field(None, ge=0, le=MAX_CP_LOSS)
+    classification: str | None = Field(None, max_length=30)
+    eval_before: str | None = Field(None, max_length=30)
+    eval_after: str | None = Field(None, max_length=30)
+    bot_move: str | None = Field(None, max_length=30)
+
+
+class ChatRequest(BaseModel):
+    message: str = Field(..., min_length=1, max_length=4_000)
+    fen: str | None = Field(None, max_length=120)
+    pgn: str | None = Field(None, max_length=20_000)
+    analysis: ChatAnalysis | None = None
+
+    @field_validator("message")
+    @classmethod
+    def validate_message(cls, value: str) -> str:
+        clean = value.strip()
+        if not clean:
+            raise ValueError("A mensagem não pode ficar vazia.")
+        return clean
+
+
+class ChatLimiter:
+    """Admite uma fila curta e limita chamadas simultâneas ao CLI."""
+
+    def __init__(self, concurrency: int, queue_size: int) -> None:
+        self._semaphore = asyncio.Semaphore(concurrency)
+        self._capacity = concurrency + queue_size
+        self._admitted = 0
+
+    def reserve(self) -> bool:
+        if self._admitted >= self._capacity:
+            return False
+        self._admitted += 1
+        return True
+
+    def unreserve(self) -> None:
+        self._admitted = max(0, self._admitted - 1)
+
+    async def acquire(self) -> None:
+        await self._semaphore.acquire()
+
+    def release(self) -> None:
+        self._semaphore.release()
+
+
+chat_limiter = ChatLimiter(AGY_MAX_CONCURRENCY, max(1, AGY_MAX_CONCURRENCY * 2))
+
+app = FastAPI(
+    title="Treino de Xadrez Local",
+    description="Stockfish local + treinador Gemini via CLI agy.",
+    version="1.0.0",
+)
+
+if STATIC_DIR.is_dir():
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+def _is_executable(path: str) -> bool:
+    return bool(path) and os.path.isfile(path) and os.access(path, os.X_OK)
+
+
+def resolve_stockfish_path() -> str | None:
+    """Resolve STOCKFISH_PATH e os fallbacks documentados."""
+    candidates: list[str] = []
+    configured = os.getenv("STOCKFISH_PATH", "").strip()
+    if configured:
+        candidates.append(configured)
+    candidates.extend(
+        [
+            "/usr/bin/stockfish",
+            "~/.local/bin/stockfish",
+            "/usr/local/bin/stockfish",
+            "stockfish",
+        ]
+    )
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        expanded = os.path.expanduser(candidate)
+        if expanded in seen:
+            continue
+        seen.add(expanded)
+        resolved = shutil.which(expanded)
+        if resolved and _is_executable(resolved):
+            return str(Path(resolved).resolve())
+    return None
+
+
+def resolve_agy_path() -> str:
+    """Retorna o caminho configurado do agy, exista ele ou não."""
+    configured = os.getenv("AGY_BIN", "~/.local/bin/agy").strip() or "~/.local/bin/agy"
+    expanded = os.path.expanduser(configured)
+    resolved = shutil.which(expanded)
+    if resolved and _is_executable(resolved):
+        return str(Path(resolved).resolve())
+    return str(Path(expanded).absolute())
+
+
+def _open_engine(path: str) -> chess.engine.SimpleEngine:
+    try:
+        engine = chess.engine.SimpleEngine.popen_uci(path, timeout=15)
+    except FileNotFoundError as exc:
+        raise StockfishUnavailable(
+            "Stockfish não encontrado. Instale o Stockfish e configure STOCKFISH_PATH no .env."
+        ) from exc
+    except (chess.engine.EngineError, OSError) as exc:
+        raise StockfishFailure(f"Não foi possível iniciar o Stockfish: {exc}") from exc
+
+    for name, value in (("Threads", 1), ("Hash", 16), ("Skill Level", 20)):
+        try:
+            engine.configure({name: value})
+        except chess.engine.EngineError:
+            # Algumas builds não expõem todas as opções UCI.
+            continue
+    return engine
+
+
+def _set_skill(engine: chess.engine.SimpleEngine, skill: int) -> None:
+    try:
+        engine.configure({"Skill Level": skill})
+    except chess.engine.EngineError:
+        pass
+
+
+def _analyse(
+    engine: chess.engine.SimpleEngine,
+    board: chess.Board,
+    depth: int,
+    seconds: float,
+) -> tuple[chess.engine.PovScore, list[chess.Move]]:
+    try:
+        info = engine.analyse(
+            board,
+            chess.engine.Limit(depth=depth, time=seconds),
+        )
+    except (chess.engine.EngineError, chess.engine.EngineTerminatedError) as exc:
+        raise StockfishFailure(f"Falha na análise do Stockfish: {exc}") from exc
+
+    score = info.get("score")
+    if score is None:
+        raise StockfishFailure("O Stockfish não retornou avaliação para a posição.")
+    pv = info.get("pv") or []
+    return score, pv
+
+
+def _score_cp(score: chess.engine.PovScore, pov: chess.Color) -> int:
+    return score.pov(pov).score(mate_score=MATE_SCORE)
+
+
+def _eval_from_score(score: chess.engine.PovScore) -> dict[str, Any]:
+    white = score.pov(chess.WHITE)
+    if white.is_mate():
+        mate = white.mate()
+        return {
+            "type": "mate",
+            "value": mate,
+            "label": f"#{mate}",
+            "white_cp": 1000 if mate > 0 else -1000,
+        }
+
+    cp = white.score()
+    label = "0.00" if cp == 0 else f"{cp / 100:+.2f}"
+    return {
+        "type": "cp",
+        "value": cp,
+        "label": label,
+        "white_cp": max(-1000, min(1000, cp)),
+    }
+
+
+def _terminal_cp(board: chess.Board, pov: chess.Color) -> int:
+    if board.is_checkmate():
+        return -MATE_SCORE if board.turn == pov else MATE_SCORE
+    return 0
+
+
+def _terminal_eval(board: chess.Board) -> dict[str, Any]:
+    if board.is_checkmate():
+        white_wins = board.turn == chess.BLACK
+        return {
+            "type": "mate",
+            "value": 0,
+            "label": "#",
+            "white_cp": 1000 if white_wins else -1000,
+            "terminal": "checkmate",
+            "winner": "white" if white_wins else "black",
+        }
+    return {
+        "type": "cp",
+        "value": 0,
+        "label": "½–½",
+        "white_cp": 0,
+        "terminal": "draw",
+    }
+
+
+def _pv_to_san(board: chess.Board, pv: list[chess.Move], limit: int = 10) -> list[str]:
+    copy = board.copy(stack=False)
+    result: list[str] = []
+    for move in pv[:limit]:
+        if move not in copy.legal_moves:
+            break
+        result.append(copy.san(move))
+        copy.push(move)
+    return result
+
+
+def _classify(
+    played: chess.Move,
+    best: chess.Move | None,
+    cp_loss: int,
+    board_after_user: chess.Board,
+    user_color: chess.Color,
+) -> str:
+    if board_after_user.is_checkmate() and board_after_user.turn != user_color:
+        return "Excelente"
+    if best is not None and played == best:
+        return "Excelente"
+    if cp_loss <= 20:
+        return "Excelente"
+    if cp_loss <= 50:
+        return "Bom"
+    if cp_loss <= 100:
+        return "Imprecisão"
+    if cp_loss <= 200:
+        return "Erro"
+    return "Gafe"
+
+
+def _game_result(board: chess.Board) -> str | None:
+    outcome = board.outcome()
+    return outcome.result() if outcome is not None else None
+
+
+def _move_and_analyze_sync(
+    fen: str,
+    move_uci: str,
+    level: int,
+) -> dict[str, Any]:
+    try:
+        board_before = chess.Board(fen)
+    except ValueError as exc:
+        raise MoveValidationError("FEN inválido.") from exc
+
+    try:
+        move = chess.Move.from_uci(move_uci)
+    except ValueError as exc:
+        raise MoveValidationError("Lance UCI inválido.") from exc
+    if move not in board_before.legal_moves:
+        raise MoveValidationError("Esse lance não é legal na posição informada.")
+
+    user_color = board_before.turn
+    played_san = board_before.san(move)
+    stockfish_path = resolve_stockfish_path()
+    if not stockfish_path:
+        raise StockfishUnavailable(
+            "Stockfish não encontrado. Instale o Stockfish e configure "
+            "STOCKFISH_PATH no .env (veja o README)."
+        )
+
+    engine = _open_engine(stockfish_path)
+    try:
+        score_before, pv_before = _analyse(
+            engine, board_before, ANALYSIS_DEPTH, ANALYSIS_TIME_SECONDS
+        )
+        best_move = pv_before[0] if pv_before else None
+        best_san = board_before.san(best_move) if best_move is not None else None
+        pv_san = _pv_to_san(board_before, pv_before)
+        eval_before = _eval_from_score(score_before)
+        cp_before_user = _score_cp(score_before, user_color)
+
+        board_after_user = board_before.copy(stack=False)
+        board_after_user.push(move)
+
+        after_best: chess.Move | None = None
+        if board_after_user.is_game_over():
+            cp_after_user = _terminal_cp(board_after_user, user_color)
+            eval_after_user = _terminal_eval(board_after_user)
+        else:
+            score_after, pv_after = _analyse(
+                engine, board_after_user, ANALYSIS_DEPTH, ANALYSIS_TIME_SECONDS
+            )
+            after_best = pv_after[0] if pv_after else None
+            cp_after_user = _score_cp(score_after, user_color)
+            eval_after_user = _eval_from_score(score_after)
+
+        cp_loss = max(0, min(MAX_CP_LOSS, cp_before_user - cp_after_user))
+        classification = _classify(
+            move, best_move, cp_loss, board_after_user, user_color
+        )
+
+        bot_depth, bot_skill = BOT_LEVELS[level]
+        board_after_bot = board_after_user.copy(stack=False)
+        bot_move_data: dict[str, str] | None = None
+        eval_after_bot = eval_after_user
+
+        if not board_after_user.is_game_over():
+            bot_move: chess.Move | None = None
+            if level == 5 and after_best is not None:
+                bot_move = after_best
+            else:
+                _set_skill(engine, bot_skill)
+                try:
+                    _, bot_pv = _analyse(
+                        engine, board_after_user, bot_depth, BOT_TIME_SECONDS
+                    )
+                finally:
+                    _set_skill(engine, 20)
+                if bot_pv:
+                    bot_move = bot_pv[0]
+
+            if bot_move is None or bot_move not in board_after_user.legal_moves:
+                if after_best is not None and after_best in board_after_user.legal_moves:
+                    bot_move = after_best
+                else:
+                    bot_move = next(iter(board_after_user.legal_moves), None)
+
+            if bot_move is not None:
+                bot_san = board_after_user.san(bot_move)
+                board_after_bot.push(bot_move)
+                bot_move_data = {"uci": bot_move.uci(), "san": bot_san}
+
+                if board_after_bot.is_game_over():
+                    eval_after_bot = _terminal_eval(board_after_bot)
+                else:
+                    score_final, _ = _analyse(
+                        engine,
+                        board_after_bot,
+                        FINAL_EVAL_DEPTH,
+                        FINAL_EVAL_TIME_SECONDS,
+                    )
+                    eval_after_bot = _eval_from_score(score_final)
+
+        return {
+            "fen_before": board_before.fen(),
+            "fen_after_user": board_after_user.fen(),
+            "fen_after_bot": board_after_bot.fen(),
+            "user_move": {"uci": move.uci(), "san": played_san},
+            "best_move": {
+                "uci": best_move.uci() if best_move is not None else None,
+                "san": best_san,
+            },
+            "bot_move": bot_move_data,
+            "pv": [m.uci() for m in pv_before[:10]],
+            "pv_san": pv_san,
+            "evaluation": {
+                "before": eval_before,
+                "after_user": eval_after_user,
+                "after_bot": eval_after_bot,
+            },
+            "cp_loss": cp_loss,
+            "classification": classification,
+            "level": level,
+            "analysis_depth": ANALYSIS_DEPTH,
+            "bot_depth": bot_depth,
+            "turn": "white" if board_after_bot.turn == chess.WHITE else "black",
+            "game_over": board_after_bot.is_game_over(),
+            "result": _game_result(board_after_bot),
+        }
+    finally:
+        try:
+            engine.quit()
+        except Exception:
+            engine.close()
+
+
+def _display_fen(fen: str | None) -> str:
+    if not fen:
+        return "não informado"
+    try:
+        board = chess.Board(fen)
+    except ValueError:
+        return "FEN inválido"
+    return board.fen() if board.is_valid() else "FEN inválido"
+
+
+def _display_pgn(pgn: str | None) -> str:
+    if not pgn:
+        return "(sem lances)"
+    clean = pgn.replace("\x00", "").strip()
+    if len(clean) > 8_000:
+        return "…(início omitido)…\n" + clean[-8_000:]
+    return clean
+
+
+def build_trainer_prompt(request: ChatRequest) -> str:
+    lines = [
+        "Você é um treinador de xadrez direto, didático e conciso, falando em português do Brasil.",
+        "Sua tarefa é explicar ao aluno o conceito tático ou estratégico por trás dos números do Stockfish.",
+        "Nunca invente lances, variantes, avaliações ou peças que não estejam nos dados abaixo.",
+        "Se os dados do motor não estiverem disponíveis, diga isso com franqueza e não invente um melhor lance.",
+        "Responda em no máximo 2 parágrafos, sem listas longas e sem markdown complicado.",
+        "",
+        "DADOS DA PARTIDA",
+        f"FEN atual: {_display_fen(request.fen)}",
+        "Histórico PGN:",
+        _display_pgn(request.pgn),
+    ]
+
+    analysis = request.analysis
+    if analysis is not None:
+        lines.extend(["", "ANÁLISE DO STOCKFISH PARA O LANCE DO ALUNO"])
+        if analysis.fen_before:
+            lines.append(f"FEN antes do lance: {_display_fen(analysis.fen_before)}")
+        if analysis.played:
+            uci = f" ({analysis.played_uci})" if analysis.played_uci else ""
+            lines.append(f"Lance jogado pelo aluno: {analysis.played}{uci}")
+        if analysis.best_move:
+            uci = f" ({analysis.best_move_uci})" if analysis.best_move_uci else ""
+            lines.append(f"Melhor lance segundo o Stockfish: {analysis.best_move}{uci}")
+        if analysis.pv:
+            lines.append(f"Linha principal (PV): {' '.join(analysis.pv)}")
+        if analysis.cp_loss is not None:
+            lines.append(f"Perda de avaliação: {analysis.cp_loss} centipawns")
+        if analysis.classification:
+            lines.append(f"Classificação: {analysis.classification}")
+        if analysis.eval_before:
+            lines.append(f"Avaliação antes: {analysis.eval_before}")
+        if analysis.eval_after:
+            lines.append(f"Avaliação depois: {analysis.eval_after}")
+        if analysis.bot_move:
+            lines.append(f"Resposta jogada pelo bot: {analysis.bot_move}")
+
+    lines.extend(
+        [
+            "",
+            f"Pergunta do aluno: {request.message}",
+            "",
+            TRAINER_RULES,
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _sse(payload: dict[str, Any]) -> str:
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def _agy_args(agy_path: str) -> list[str]:
+    args = [
+        agy_path,
+        "--print=",
+        "--input-format",
+        "stream-json",
+        "--output-format",
+        "stream-json",
+        "--model",
+        AGY_MODEL,
+        "--effort",
+        AGY_EFFORT,
+        "--disable-slash-commands",
+    ]
+    if AGY_SANDBOX:
+        args.append("--sandbox")
+    return args
+
+
+def _kill_process_group(proc: asyncio.subprocess.Process | None) -> None:
+    """SIGKILL síncrono: precisa funcionar mesmo com o gerador cancelado."""
+    if proc is None or proc.returncode is not None:
+        return
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
+async def _reap_process(proc: asyncio.subprocess.Process | None) -> None:
+    if proc is None:
+        return
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=5)
+    except (TimeoutError, asyncio.CancelledError):
+        pass
+    except Exception:
+        pass
+
+
+async def _run_agy(
+    prompt: str,
+    request: Request,
+    agy_path: str,
+) -> AsyncIterator[str]:
+    proc: asyncio.subprocess.Process | None = None
+    pump_task: asyncio.Task[None] | None = None
+    stderr_task: asyncio.Task[None] | None = None
+    stderr_chunks: list[str] = []
+    saw_result = False
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *_agy_args(agy_path),
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=str(BASE_DIR),
+            env=os.environ.copy(),
+            start_new_session=True,
+        )
+
+        assert proc.stdin is not None
+        payload = json.dumps(
+            {
+                "event": "user",
+                "message": {"role": "user", "content": prompt},
+            },
+            ensure_ascii=False,
+        )
+        proc.stdin.write((payload + "\n").encode("utf-8"))
+        await proc.stdin.drain()
+        proc.stdin.close()
+
+        queue: asyncio.Queue[str | None] = asyncio.Queue()
+
+        async def pump_stdout() -> None:
+            assert proc is not None and proc.stdout is not None
+            try:
+                while True:
+                    raw = await proc.stdout.readline()
+                    if not raw:
+                        break
+                    await queue.put(raw.decode("utf-8", errors="replace"))
+            finally:
+                await queue.put(None)
+
+        async def drain_stderr() -> None:
+            assert proc is not None and proc.stderr is not None
+            while True:
+                raw = await proc.stderr.readline()
+                if not raw:
+                    break
+                stderr_chunks.append(raw.decode("utf-8", errors="replace"))
+                if len(stderr_chunks) > 200:
+                    del stderr_chunks[:100]
+
+        pump_task = asyncio.create_task(pump_stdout())
+        stderr_task = asyncio.create_task(drain_stderr())
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + AGY_TIMEOUT_SECONDS
+        last_heartbeat = loop.time()
+
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise TimeoutError
+
+            try:
+                line = await asyncio.wait_for(
+                    queue.get(), timeout=min(0.5, remaining)
+                )
+            except TimeoutError:
+                if await request.is_disconnected():
+                    raise ClientDisconnected
+                # Um comentário SSE força a detecção de desconexão pelo
+                # servidor e mantém proxies/navegadores cientes de que o
+                # stream está vivo enquanto o modelo pensa.
+                if loop.time() - last_heartbeat >= 5:
+                    last_heartbeat = loop.time()
+                    yield ": ping\n\n"
+                continue
+
+            if line is None:
+                break
+            line = line.strip()
+            if not line:
+                continue
+
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict):
+                continue
+
+            event_type = event.get("event")
+            if event_type == "step_update":
+                step = event.get("step_update")
+                if not isinstance(step, dict):
+                    continue
+                if step.get("step_type") != "agent_response":
+                    continue
+                delta = step.get("text_delta")
+                if isinstance(delta, str) and delta:
+                    yield _sse({"delta": delta})
+            elif event_type == "result":
+                result = event.get("result")
+                result = result if isinstance(result, dict) else {}
+                yield _sse(
+                    {
+                        "done": True,
+                        "status": result.get("status"),
+                        "usage": result.get("usage"),
+                    }
+                )
+                saw_result = True
+                break
+            # Eventos "init" e steps de ferramenta são ignorados de propósito.
+
+        if not saw_result:
+            if stderr_task is not None and not stderr_task.done():
+                try:
+                    await asyncio.wait_for(asyncio.shield(stderr_task), timeout=1)
+                except Exception:
+                    pass
+
+            return_code = proc.returncode
+            if return_code is None:
+                try:
+                    return_code = await asyncio.wait_for(proc.wait(), timeout=3)
+                except TimeoutError:
+                    return_code = None
+
+            if return_code not in (0, None):
+                detail = " ".join(stderr_chunks).strip()[-1_500:]
+                message = f"agy terminou com código {return_code}."
+                if detail:
+                    message += f" Detalhe: {detail}"
+                yield _sse(
+                    {"error": message, "done": True, "status": "ERROR"}
+                )
+            else:
+                yield _sse(
+                    {
+                        "error": "agy encerrou sem enviar o evento result.",
+                        "done": True,
+                        "status": "NO_RESULT",
+                    }
+                )
+
+    except ClientDisconnected:
+        return
+    except TimeoutError:
+        yield _sse(
+            {
+                "error": (
+                    "O treinador excedeu o limite de "
+                    f"{AGY_TIMEOUT_SECONDS:.0f} s e foi interrompido."
+                ),
+                "done": True,
+                "status": "TIMEOUT",
+            }
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        yield _sse(
+            {
+                "error": f"Falha ao executar o agy: {exc}",
+                "done": True,
+                "status": "ERROR",
+            }
+        )
+    finally:
+        # Mata antes de qualquer await: durante a desconexão do cliente o
+        # gerador é cancelado e um await pode ser interrompido no meio.
+        _kill_process_group(proc)
+
+        if proc is not None and proc.stdin is not None and not proc.stdin.is_closing():
+            try:
+                proc.stdin.close()
+            except Exception:
+                pass
+
+        for task in (pump_task, stderr_task):
+            if task is not None and not task.done():
+                task.cancel()
+        try:
+            await asyncio.gather(
+                *[task for task in (pump_task, stderr_task) if task is not None],
+                return_exceptions=True,
+            )
+        except BaseException:
+            pass
+
+        try:
+            await asyncio.shield(_reap_process(proc))
+        except BaseException:
+            pass
+
+
+async def _stream_chat(
+    prompt: str,
+    request: Request,
+    agy_path: str,
+) -> AsyncIterator[str]:
+    acquired = False
+    try:
+        yield ": conectado ao treinador\n\n"
+        while True:
+            try:
+                await asyncio.wait_for(chat_limiter.acquire(), timeout=5)
+                acquired = True
+                break
+            except TimeoutError:
+                yield ": aguardando vaga na fila\n\n"
+        async for chunk in _run_agy(prompt, request, agy_path):
+            yield chunk
+    finally:
+        if acquired:
+            chat_limiter.release()
+        chat_limiter.unreserve()
+
+
+def _probe_stockfish(path: str) -> tuple[bool, str | None]:
+    try:
+        engine = chess.engine.SimpleEngine.popen_uci(path, timeout=10)
+    except Exception:
+        return False, None
+
+    name: str | None = None
+    try:
+        engine.ping()
+        engine_id = getattr(engine, "id", None)
+        if isinstance(engine_id, dict):
+            value = engine_id.get("name")
+            name = value if isinstance(value, str) else None
+        return True, name
+    except Exception:
+        return False, name
+    finally:
+        try:
+            engine.quit()
+        except Exception:
+            engine.close()
+
+
+@app.get("/", include_in_schema=False)
+async def index() -> FileResponse:
+    return FileResponse(STATIC_DIR / "index.html")
+
+
+@app.get("/health")
+async def health() -> dict[str, Any]:
+    stockfish_path = resolve_stockfish_path()
+    uci_ok = False
+    stockfish_name: str | None = None
+    if stockfish_path:
+        try:
+            uci_ok, stockfish_name = await asyncio.wait_for(
+                asyncio.to_thread(_probe_stockfish, stockfish_path),
+                timeout=12,
+            )
+        except TimeoutError:
+            uci_ok = False
+
+    agy_path = resolve_agy_path()
+    agy_found = _is_executable(agy_path)
+
+    warnings: list[str] = []
+    if not stockfish_path:
+        warnings.append(
+            "Stockfish não encontrado. Instale o Stockfish e configure STOCKFISH_PATH."
+        )
+    elif not uci_ok:
+        warnings.append("Stockfish encontrado, mas não respondeu ao comando uci.")
+    if not agy_found:
+        warnings.append("agy não encontrado neste host; o chat do treinador não funciona.")
+    if AGY_EFFORT not in VALID_AGY_EFFORTS:
+        warnings.append(f"AGY_EFFORT inválido: {AGY_EFFORT!r}.")
+    if AGY_MODEL not in VALID_AGY_MODELS:
+        warnings.append(f"AGY_MODEL inválido: {AGY_MODEL!r}.")
+
+    return {
+        "status": "ok" if stockfish_path and uci_ok and agy_found else "degraded",
+        "stockfish": {
+            "path": stockfish_path,
+            "found": stockfish_path is not None,
+            "uci": uci_ok,
+            "name": stockfish_name,
+        },
+        "agy": {
+            "path": agy_path,
+            "found": agy_found,
+            "model": AGY_MODEL,
+            "effort": AGY_EFFORT,
+            "sandbox": AGY_SANDBOX,
+            "timeout_seconds": AGY_TIMEOUT_SECONDS,
+            "max_concurrency": AGY_MAX_CONCURRENCY,
+        },
+        "warnings": warnings,
+    }
+
+
+@app.post("/move-and-analyze")
+async def move_and_analyze(body: MoveAndAnalyzeRequest) -> dict[str, Any]:
+    try:
+        return await asyncio.to_thread(
+            _move_and_analyze_sync, body.fen, body.move, body.level
+        )
+    except MoveValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except StockfishUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except StockfishFailure as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post("/chat")
+async def chat(body: ChatRequest, request: Request) -> StreamingResponse:
+    agy_path = resolve_agy_path()
+    if not _is_executable(agy_path):
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "agy não encontrado neste host. O chat do treinador só funciona "
+                "onde o CLI agy estiver instalado e autenticado localmente."
+            ),
+        )
+    if AGY_EFFORT not in VALID_AGY_EFFORTS:
+        raise HTTPException(
+            status_code=500,
+            detail=f"AGY_EFFORT inválido: {AGY_EFFORT!r}.",
+        )
+    if AGY_MODEL not in VALID_AGY_MODELS:
+        raise HTTPException(
+            status_code=500,
+            detail=f"AGY_MODEL inválido: {AGY_MODEL!r}.",
+        )
+
+    prompt = build_trainer_prompt(body)
+
+    if not chat_limiter.reserve():
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                "O treinador está ocupado com outras análises. "
+                "Aguarde alguns segundos e tente novamente."
+            ),
+        )
+
+    try:
+        response = StreamingResponse(
+            _stream_chat(prompt, request, agy_path),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
+    except Exception:
+        chat_limiter.unreserve()
+        raise
+    return response
