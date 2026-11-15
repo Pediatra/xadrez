@@ -69,6 +69,7 @@ const ui = {
   chatForm: $("#chat-form"),
   chatInput: $("#chat-input"),
   chatSend: $("#chat-send"),
+  chatStop: $("#chat-stop"),
   chatStatus: $("#chat-status"),
   appLayout: $(".app-layout"),
   trainerLevel: $("#trainer-level"),
@@ -116,6 +117,8 @@ const state = {
   turnPending: false,
   agyAvailable: null,
   chatBusy: false,
+  chatStopping: false,
+  chatController: null,
   chatQueue: [],
   moveController: null,
   arrowsTimer: null,
@@ -865,6 +868,7 @@ function bindEvents() {
     event.preventDefault();
     submitChat();
   });
+  ui.chatStop.addEventListener("click", stopChat);
   ui.chatInput.addEventListener("input", updateChatControls);
   ui.chatInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey) {
@@ -1987,10 +1991,17 @@ async function checkHealth() {
 }
 
 function updateChatControls() {
-  ui.chatSend.disabled = state.chatBusy || ui.chatInput.value.trim().length === 0;
+  const busy = state.chatBusy;
+  ui.chatSend.hidden = busy;
+  ui.chatSend.disabled = busy || ui.chatInput.value.trim().length === 0;
+  ui.chatStop.hidden = !busy;
+  ui.chatStop.disabled = !busy || state.chatStopping;
 
-  if (state.chatBusy) {
-    if (state.chatQueue.length > 0) {
+  if (busy) {
+    if (state.chatStopping) {
+      ui.chatStatus.dataset.state = "stopping";
+      ui.chatStatus.textContent = "parando";
+    } else if (state.chatQueue.length > 0) {
       ui.chatStatus.dataset.state = "queued";
       ui.chatStatus.textContent = `${state.chatQueue.length} na fila`;
     } else {
@@ -2010,6 +2021,15 @@ function updateChatControls() {
   ui.chatStatus.textContent = "pronto";
 }
 
+function stopChat() {
+  if (!state.chatBusy || state.chatStopping) return;
+
+  state.chatStopping = true;
+  state.chatQueue = [];
+  state.chatController?.abort();
+  updateChatControls();
+}
+
 function pumpChatQueue() {
   updateChatControls();
   if (state.chatBusy) return;
@@ -2023,16 +2043,21 @@ function pumpChatQueue() {
 
 async function streamTrainerReply(payload) {
   state.chatBusy = true;
+  state.chatStopping = false;
   updateChatControls();
 
   const bubble = createChatBubble("trainer", { thinking: true });
   const textElement = bubble.querySelector(".bubble-text");
+  const controller = new AbortController();
+  state.chatController = controller;
+  let interrupted = false;
 
   try {
     const response = await fetch("/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
+      signal: controller.signal,
     });
 
     if (!response.ok) {
@@ -2048,23 +2073,37 @@ async function streamTrainerReply(payload) {
       textElement.textContent = "O treinador não retornou texto.";
     }
   } catch (error) {
-    appendBubbleError(bubble, error.message);
+    if (controller.signal.aborted) {
+      interrupted = true;
+    } else {
+      appendBubbleError(bubble, error.message);
+    }
   } finally {
+    const stopped = interrupted || state.chatStopping;
+    if (state.chatController === controller) state.chatController = null;
     bubble.classList.remove("is-thinking");
     state.chatBusy = false;
+    state.chatStopping = false;
 
-    const finalText = textElement.textContent.trim();
-    if (finalText) {
-      decorateChatSquares(textElement);
-      pushChatLog({
-        role: "trainer",
-        text: finalText,
-        error: bubble.classList.contains("error"),
-      });
+    if (stopped) {
+      bubble.remove();
+      renderChatNote("⏹ Explicação interrompida.");
+    } else {
+      const finalText = textElement.textContent.trim();
+      if (finalText) {
+        decorateChatSquares(textElement);
+        pushChatLog({
+          role: "trainer",
+          text: finalText,
+          error: bubble.classList.contains("error"),
+        });
+      }
     }
 
     updateChatControls();
     scrollChatToBottom();
+
+    if (stopped) ui.chatInput.focus({ preventScroll: true });
 
     if (state.chatQueue.length > 0) {
       queueMicrotask(pumpChatQueue);

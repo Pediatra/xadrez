@@ -191,6 +191,10 @@ o caminho do `agy`, se ele existe e qual `AGY_MODEL` está em uso.
   notação solta e explica a peça, as casas e a ideia por trás do lance.
 - Você pode perguntar qualquer coisa no chat a qualquer momento. O frontend
   anexa silenciosamente o FEN e o PGN atuais a cada mensagem.
+- Enquanto o treinador pensa ou transmite a resposta, o botão **Parar**
+  substitui **Enviar**. Ele cancela a chamada atual, descarta a resposta
+  parcial, esvazia a fila de explicações automáticas e libera o chat na hora.
+  No servidor, o processo `agy` daquela chamada é encerrado.
 - Quando o treinador cita uma casa ou um lance, ela vira uma referência clicável
   no texto. Passar o mouse (ou focar pelo teclado) destaca a casa no tabuleiro;
   se for um lance, a interface desenha a seta de origem para destino. Clicar
