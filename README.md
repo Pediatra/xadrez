@@ -1,16 +1,19 @@
 # Treino de Xadrez Local
 
-> **Stockfish não está instalado nesta máquina.** Ele não existe em
-> `/usr/bin/stockfish` nem no `PATH`. Instale-o antes de usar a análise da
-> partida seguindo uma das opções abaixo.
+> **Nesta máquina o Stockfish já está instalado** em
+> `~/.local/bin/stockfish` (Stockfish 19, com UCI validado). O `.env` aponta
+> para esse caminho e a análise do tabuleiro está funcionando. As instruções
+> abaixo ficam como referência para reinstalação ou para outro host.
 
 Aplicação web local de treino de xadrez: tabuleiro interativo, Stockfish para
 análise e um treinador Gemini 4 Hydrogen via CLI `agy`. O backend é FastAPI puro;
 o frontend é HTML, CSS e JavaScript vanilla carregado por CDN, sem build.
 
-## 1. Instalar o Stockfish (Bazzite/Fedora Atomic)
+## 1. Stockfish (instalação/reinstalação)
 
-O sistema atual é Bazzite/Fedora Atomic. Escolha **uma** das opções.
+O Stockfish já está instalado em `~/.local/bin/stockfish`. Se precisar
+reinstalar ou instalar em outro host Bazzite/Fedora Atomic, escolha **uma** das
+opções abaixo.
 
 ### Opção A — binário oficial em `~/.local/bin` (recomendada, sem reboot)
 
@@ -316,5 +319,6 @@ Depois de instalar o Stockfish ou alterar o `.env`, reinicie o serviço:
 systemctl --user restart xadrez.service
 ```
 
-O `/health` continua mostrando `degraded` enquanto o Stockfish não estiver
-instalado; o chat e o tabuleiro funcionam, mas a análise da partida não.
+O `/health` deve mostrar `status: "ok"` e o Stockfish 19 em
+`stockfish.name`, com `uci: true`. Se aparecer `degraded`, confira o caminho em
+`STOCKFISH_PATH`, a permissão de execução do binário e reinicie o serviço.
