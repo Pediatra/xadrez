@@ -295,6 +295,7 @@ Comandos úteis:
 
 ```bash
 systemctl --user status xadrez.service
+systemctl --user cat xadrez.service
 systemctl --user restart xadrez.service
 journalctl --user -u xadrez.service -f
 tailscale serve status
